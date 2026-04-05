@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         MWI HouseCost/房屋升级材料计算器
+// @name         MWI HouseCost/房屋升级材料计算器优化
 // @namespace    http://tampermonkey.net/
-// @version      0.81
+// @version      0.81.1
 // @description  House Cost Calc/计算房屋升级所需的材料
 // @author       shykai
 // @match        https://www.milkywayidle.com/*

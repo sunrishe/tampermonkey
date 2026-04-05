@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         [MWI] Ultimate Enhancement Tracker v3.7.9
+// @name         [MWI] Ultimate Enhancement Tracker Optimization v3.7.9
 // @namespace    http://tampermonkey.net/
-// @version      3.7.9
+// @version      3.7.9.1
 // @description  Tracks pretty much everything about enhancing
 // @author       Nex (Base tracker by Truth_Light, enhancelator by Dohnuts/MangoFlavor)
 // @match        https://www.milkywayidle.com/*

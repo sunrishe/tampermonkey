@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         MWI Profit Panel
+// @name         MWI Profit Panel Optimization
 // @namespace    http://tampermonkey.net/
 // @version      2025.12.05.1
 // @description  milkywayidle游戏利润插件，在右面板添加了根据当前市场数据计算出来的收益详情，掉落记录展示了掉落详情
