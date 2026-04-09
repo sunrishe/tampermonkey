@@ -3,7 +3,7 @@
 // @name:zh-CN   [银河奶牛]生产采集增强优化
 // @name:en      MWI Production & Gathering Enhanced
 // @namespace    http://tampermonkey.net/
-// @version      3.6.8.8
+// @version      3.6.8.10
 // @description  计算生产、强化、房屋所需材料并一键购买；计算生产与炼金实时利润；按照目标材料数量进行采集；快速切换角色；自动收集市场订单；功能支持自定义开关。
 // @description:en  Calculates the materials required for production, enhancement, and housing, and allows one-click purchasing; calculates real-time profit for production and alchemy; gathers resources based on target material quantities; supports quick character switching; automatically collects market orders; all features support customizable toggles.
 // @author       XIxixi297
@@ -144,7 +144,7 @@
         addToCart: '加入购物车', add: '已添加', toCart: '到购物车',
         shoppingCart: '购物车', cartEmpty: '购物车是空的', purchaseAll: '一键购买',
         cartClear: '清空购物车', directBuyMode: '直购', bidOrderMode: '求购',
-        cartRemove: '移除', cartItem: '项', selectAll: '全选', batchSettings: '批量设置:',
+        cartRemove: '移除', cartItem: '项', totalPrice: '总价', selectAll: '全选', batchSettings: '批量设置:',
         noMaterialsNeeded: '没有需要补充的材料', addToCartFailed: '添加失败，请稍后重试',
         cartClearSuccess: '已清空购物车', pleaseEnterListName: '请输入文件名',
         exportSavedLists: '📤 导出购物车', importSavedLists: '📥 导入购物车',
@@ -250,7 +250,7 @@
         addToCart: 'Add to Cart', add: 'Added', toCart: 'to Cart',
         shoppingCart: 'Shopping Cart', cartEmpty: 'Cart is empty', purchaseAll: 'Purchase All',
         cartClear: 'Clear Cart', directBuyMode: 'Ask', bidOrderMode: 'Bid',
-        cartRemove: 'Remove', cartItem: 'items', selectAll: 'Select All', batchSettings: 'Batch Settings:',
+        cartRemove: 'Remove', cartItem: 'items', totalPrice: 'Total Price', selectAll: 'Select All', batchSettings: 'Batch Settings:',
         noMaterialsNeeded: 'No materials need to be supplemented', addToCartFailed: 'Add failed, please try again later',
         cartClearSuccess: 'Cart cleared', pleaseEnterListName: 'Please enter filename',
         exportSavedLists: '📤 Export Cart', importSavedLists: '📥 Import Cart',
@@ -768,7 +768,7 @@
         formatProfit(profit) {
             const abs = Math.abs(profit);
             const sign = profit < 0 ? '-' : '';
-            if (abs >= 1e9) return sign + (abs / 1e9).toFixed(1) + 'B';
+            if (abs >= 1e9) return sign + (abs / 1e9).toFixed(2) + 'B';
             if (abs >= 1e6) return sign + (abs / 1e6).toFixed(1) + 'M';
             if (abs >= 1e3) return sign + (abs / 1e3).toFixed(1) + 'K';
             return profit.toString();
@@ -1380,12 +1380,83 @@
         return response.marketItemOrderBooks;
     }
 
+    // 获取PGE、MWI和mooket缓存的市场数据
+    const cachedMarketData = {
+        mooketNew: null,
+        mooket: null,
+        mwi: null,
+        refresh: () => {
+            const readItem = (name) => {
+                try {
+                    return JSON.parse(localStorage.getItem(name));
+                } catch (e) {}
+            };
+            cachedMarketData.mooketNew = readItem('MWIAPI_JSON_NEW');
+            cachedMarketData.mooket = readItem('MWICore_marketData');
+            cachedMarketData.mwi = readItem('MWITools_marketAPI_json');
+            window.MWIModules?.shoppingCart?.updateCartBadge();
+        },
+        getData: {
+            pge: (itemHrid, enhanceLevel = 0) => {
+                const cached = window.marketDataCache?.get(itemHrid);
+                if (!cached) return {};
+                const data = cached.data.orderBooks?.[enhanceLevel];
+                return {a: data?.asks?.[0]?.price, b: data?.bids?.[0]?.price, t: parseInt(cached.timestamp / 1000)};
+            },
+            mooketNew: (itemHrid, enhanceLevel = 0) => {
+                const cached = cachedMarketData.mooketNew?.marketData?.[itemHrid];
+                if (!cached) return {};
+                const data = cached?.[enhanceLevel];
+                return {a: data?.a, b: data?.b, t: cachedMarketData.mooketNew?.timestamp};
+            },
+            mooket: (itemHrid, enhanceLevel = 0) => {
+                const cached = cachedMarketData.mooket?.[`${itemHrid}:${enhanceLevel}`];
+                if (!cached) return {};
+                return {a: cached.ask, b: cached.bid, t: cached.time};
+            },
+            mwi: (itemHrid, enhanceLevel = 0) => {
+                const cached = cachedMarketData.mwi?.marketData?.[itemHrid];
+                if (!cached) return {};
+                const data = cached?.[enhanceLevel];
+                return {a: data?.a, b: data?.b, t: cachedMarketData.mwi?.timestamp};
+            },
+        },
+    };
+
+    setInterval(cachedMarketData.refresh, 20 * 1000);
+    cachedMarketData.refresh();
+
+    function getMarketCacheData(itemHrid, enhanceLevel = 0) {
+        const fullItemHrid = itemHrid.startsWith('/items/') ? itemHrid : `/items/${itemHrid}`;
+        const r = {source: {}, a: null, b: null, t: null};
+        Object.entries(cachedMarketData.getData).map(([key, func]) => {
+            const data = func(fullItemHrid, enhanceLevel);
+            r.source[key] = data;
+            if (!data.t) return;
+            if (!r.t || data.t > r.t) {
+                r.a = data.a;
+                r.b = data.b;
+                r.t = data.t;
+            }
+        });
+        return r;
+    }
+
     async function executePurchase(itemHrid, quantity, price, isInstant) {
         if (!window.PGE.core) {
             throw new Error('游戏核心对象未就绪');
         }
 
         const fullItemHrid = itemHrid.startsWith('/items/') ? itemHrid : `/items/${itemHrid}`;
+        // 检查金币是否足够发起订单
+        const checkCoin = (price, quantity) => {
+            // 获取仓库金币
+            const coin = utils.getCountById('coin');
+            const total = price * quantity;
+            if (total > coin) {
+                throw new Error(`购买总价${utils.formatProfit(total)}缺少金币${utils.formatProfit(total - coin)}`);
+            }
+        };
 
         if (sbxWin.mwiHelper.environments.isTestServer) {
             const testFullItemHrid = fullItemHrid.replace(/^\/items\//, '/shop_items/test/');
@@ -1413,6 +1484,8 @@
                 throw error;
             }
         } else if (isInstant) {
+            checkCoin(price, quantity);
+
             const successPromise = window.PGE.waitForMessage(
                 'info',
                 15000,
@@ -1436,6 +1509,8 @@
                 throw error;
             }
         } else {
+            checkCoin(price, quantity);
+
             const successPromise = window.PGE.waitForMessage(
                 'info',
                 15000,
@@ -4322,14 +4397,24 @@
                     font-size: 1rem;
                     font-weight: bold;
                 ">${LANG.shoppingCart}</h3>
-                <div style="
-                    background: rgba(156, 39, 176, 0.2);
-                    color: var(--color-text-dark-mode);
-                    padding: 0.125rem 0.5rem;
-                    border-radius: 0.75rem;
-                    font-size: 0.6875rem;
-                    font-weight: 500;
-                " id="cart-count-display">0 ${LANG.cartItem}</div>
+                <div style="display: flex; gap: 0.25rem; align-items: center;">
+                    <div style="
+                        background: rgba(156, 39, 176, 0.2);
+                        color: var(--color-text-dark-mode);
+                        padding: 0.125rem 0.5rem;
+                        border-radius: 0.75rem;
+                        font-size: 0.6875rem;
+                        font-weight: 500;
+                    " id="cart-count-display">0 ${LANG.cartItem}</div>
+                    <div style="
+                        background: rgba(39, 114, 176, 0.2);
+                        color: var(--color-text-dark-mode);
+                        padding: 0.125rem 0.5rem;
+                        border-radius: 0.75rem;
+                        font-size: 0.6875rem;
+                        font-weight: 500;
+                    " id="cart-price-display">0 ${LANG.totalPrice}</div>
+                </div>
             </div>
 
             <!-- 全局控制区域 -->
@@ -4487,6 +4572,7 @@
 
             document.body.appendChild(this.cartContainer);
             this.bindEvents();
+            this.updateCartBadge();
             this.updateCartDisplay();
         }
 
@@ -4852,6 +4938,7 @@
                 this.items.forEach(item => {
                     item.selected = this.allSelected;
                 });
+                this.updateCartBadge();
                 this.updateCartDisplay();
                 this.saveCartToStorage();
             });
@@ -4933,6 +5020,7 @@
                     const item = this.items.get(itemId);
                     if (item) {
                         item.purchaseMode = newMode;
+                        this.updateCartBadge();
                         this.saveCartToStorage();
                     }
                     return;
@@ -5005,6 +5093,7 @@
             this.defaultPurchaseMode = mode;
 
             if (changedCount > 0) {
+                this.updateCartBadge();
                 this.updateCartDisplay();
                 this.saveCartToStorage();
             }
@@ -5128,7 +5217,7 @@
                     (result.success ? LANG.submitted : LANG.failed) :
                     (result.success ? LANG.purchased : LANG.failed);
 
-                const message = `${statusText} ${result.item.materialName || result.item.itemHrid} x${result.item.quantity}`;
+                const message = `${statusText} ${result.item.materialName || result.item.itemHrid} x${result.item.quantity} ${result.error || ''}`;
                 this.showToast(message, result.success ? 'success' : 'error', 2000);
 
                 if (result.success) successCount++;
@@ -5463,6 +5552,7 @@
         updateCartBadge() {
             const tabBadge = document.getElementById('cart-tab-badge');
             const countDisplay = document.getElementById('cart-count-display');
+            const priceDisplay = document.getElementById('cart-price-display');
 
             if (!tabBadge || !countDisplay) return;
 
@@ -5472,9 +5562,22 @@
                 tabBadge.textContent = itemTypeCount > 99 ? '99+' : itemTypeCount.toString();
                 tabBadge.style.display = 'flex';
                 countDisplay.textContent = `${itemTypeCount} ${LANG.cartItem}`;
+                // 计算总价
+                let calcTotalPrice = 0, invalidPrice = false;
+                this.items.forEach((item, itemId) => {
+                    const data = getMarketCacheData(itemId);
+                    // console.log(`计算总价, ${item.name}`, item, data);
+                    const price = (item.purchaseMode === 'bid' ? data.b : data.a) || 0;
+                    if (!data.t || price < 1) invalidPrice = true;
+                    calcTotalPrice += Math.max(price, 0) * item.quantity;
+                });
+                priceDisplay.style.display = invalidPrice ? 'none' : 'block';
+                priceDisplay.textContent = `${LANG.totalPrice} ${utils.formatProfit(calcTotalPrice)}`;
             } else {
                 tabBadge.style.display = 'none';
                 countDisplay.textContent = `0 ${LANG.cartItem}`;
+                priceDisplay.style.display = 'block';
+                priceDisplay.textContent = `${LANG.totalPrice} 0`;
             }
         }
 
@@ -6086,7 +6189,7 @@
                     (result.success ? LANG.submitted : LANG.failed) :
                     (result.success ? LANG.purchased : LANG.failed);
 
-                const message = `${statusText} ${result.item.materialName || result.item.itemHrid} x${result.item.quantity}`;
+                const message = `${statusText} ${result.item.materialName || result.item.itemHrid} x${result.item.quantity} ${result.error || ''}`;
                 toast?.show(message, result.success ? 'success' : 'error');
 
                 if (result.success) successCount++;

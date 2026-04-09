@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         [银河奶牛]装备强化轻松+20（测试服专用）
-// @version      2.4.16
+// @version      2.4.17
 // @namespace    http://tampermonkey.net/
 // @description  通过自由强化、批量强化基底、批量合成功能轻松完成物品的强化😀
 // @author       sunrishe
@@ -1088,6 +1088,28 @@
                 this.taskStatus = -1;
             }
         },
+
+        hideQueuedActions() {
+            if (document.querySelector('#easy20-hide-queued-actions')) {
+                return;
+            }
+            const style = document.createElement('style');
+            style.id = 'easy20-hide-queued-actions';
+            style.textContent = `
+                .MuiTooltip-tooltip:has(> .QueuedActions_queuedActionsEditMenu__3OoQH),
+                .QueuedActions_queuedActionsEditMenu__3OoQH,
+                .QueuedActions_queuedActionsEditMenu__3OoQH .QueuedActions_actions__2Lur6,
+                .QueuedActions_queuedActionsEditMenu__3OoQH .QueuedActions_action__r3HlD {
+                    display: none !important;
+                    visibility: hidden !important;
+                }
+            `;
+            document.head.appendChild(style);
+        },
+
+        cancelHideQueuedActions() {
+            document.querySelector('#easy20-hide-queued-actions')?.remove();
+        }
     };
 
     // Hook WebSocket（支持所有域名）
@@ -1110,9 +1132,16 @@
 
     // 监控页面变化，添加自定义控件
     const observer = new MutationObserver((mutationsList) => {
-        // 任务执行中，禁用行动队列提示框显示
-        if (components.taskStatus !== 0 && document.querySelector('.QueuedActions_queuedActionsEditMenu__3OoQH')) {
-            document.querySelector('.QueuedActions_queuedActions__2xerL')?.click();
+        // // 任务执行中，禁用行动队列提示框显示
+        // if (components.taskStatus !== 0 && document.querySelector('.QueuedActions_queuedActionsEditMenu__3OoQH')) {
+        //     // 点击队列按钮会导致销毁节点，然后又创建大量DOM节点，内存占用非常高
+        //     document.querySelector('.QueuedActions_queuedActions__2xerL')?.click();
+        // }
+        // 任务执行中，禁用行动队列提示框显示。使用CSS屏蔽元素展示避免频繁销毁DOM节点降低内存占用
+        if (components.taskStatus !== 0) {
+            components.hideQueuedActions();
+        } else {
+            components.cancelHideQueuedActions();
         }
 
         // 判断是否是在强化页面
