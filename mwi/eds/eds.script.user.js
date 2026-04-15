@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [银河奶牛]装备数据同步
 // @namespace    http://tampermonkey.net/
-// @version      1.0.0
+// @version      1.0.2
 // @description  1.在利润网站Milkonomy中同步用户生活装备数据；2.配装页面复制战斗模拟器配装数据（待开发）。
 // @author       Sunrishe
 // @website      https://greasyfork.org/zh-CN/scripts/574037
@@ -34,6 +34,8 @@
     `);
 
     // ==================== 配置 ====================
+    const hostname = window.location.hostname;
+    const domainname = hostname.substring(hostname.lastIndexOf('.', hostname.lastIndexOf('.') - 1) + 1);
     const CONFIG = {
         // WebSocket 事件名
         mwiWsSend: 'mwi-ws:send',
@@ -42,12 +44,10 @@
         mwiMilkonomyPreset: 'mwiMilkonomyPreset',
         // 游戏域名
         characterId: new URLSearchParams(window.location.search).get('characterId'),
-        domainname: window.location.hostname.substring(
-            window.location.hostname.lastIndexOf('.', window.location.hostname.lastIndexOf('.') - 1) + 1
-        ),
+        domainname,
         // 网站类型判断
-        isMilkonomySite: document.URL.includes('milkonomy.pages.dev'),
-        isGameSite: document.URL.includes('milkywayidle.com') && !document.URL.includes('milkonomy.pages.dev'),
+        isGameSite: domainname === 'milkywayidle.com' || domainname === 'milkywayidlecn.com',
+        isMilkonomySite: hostname === 'milkonomy.pages.dev',
         // LocalStorage Keys
         lsPresets: 'player-action-config-presets',
         // 组件样式
@@ -232,8 +232,9 @@
         }
 
         _doSync() {
-            const presets = JSON.parse(window.localStorage.getItem(CONFIG.lsPresets));
             const preset = GM_getValue(CONFIG.mwiMilkonomyPreset);
+            if (!preset || !('name' in preset)) return;
+            const presets = JSON.parse(window.localStorage.getItem(CONFIG.lsPresets)) || [];
             let index = presets.findIndex(v => v.name === preset.name);
 
             if (index === -1) {
