@@ -2,9 +2,9 @@
 
 本插件基于 **[Everyday Profit Plus](https://greasyfork.org/zh-CN/scripts/559205-everyday-profit-plus)** 进行修改。原插件很好用，但是已经无人维护，并且不支持移动端。
 
-> 不接收新功能开发
-
 ## 改动说明
+
+> 暂时没有新功能开发的计划
 
 1. **完成了移动端适配；**
 2. 修复了移动端无法正确展示功能入口的问题；
