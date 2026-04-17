@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Everyday Profit Plus Fixed
 // @namespace    http://tampermonkey.net/
-// @version      2026.01.29.1.1
+// @version      2026.01.29.1.2
 // @description  Enhanced Everyday Profit: keeps total net worth history & tags; adds daily P/L chart+MA, export/import backup, data manager (edit/delete/anomaly cleanup), and MWITools breakdown change charts. Includes CN/EN toggle (default follows browser).
 // @author       VictoryWinWinWin, PaperCat, SuXingX, Sunrishe
 // @website      https://greasyfork.org/zh-CN/scripts/570287
@@ -62,6 +62,7 @@ const ZH2EN = {
         '返回总览': 'Back',
         '总览': 'All',
         '7天': '7D',
+        '15天': '15D',
         '30天': '30D',
         '重置缩放': 'Reset Zoom',
         '管理标签': 'Tags',
@@ -1874,6 +1875,7 @@ const fillEntriesWithDateGaps = (entries, filler = null) => {
     setBtn('btnNetWorthMode', '净资产');
     setBtn('btnProfitMode', '盈亏');
     setBtn('btn7Days', '7天');
+    setBtn('btn15Days', '15天');
     setBtn('btn30Days', '30天');
     setBtn('btnAllDays', '总览');
     setBtn('btnResetZoom', '重置缩放');
@@ -1917,6 +1919,7 @@ const ensureModal = () => {
                         <button id="btnToggleBreakdown">分项资产</button>
 
                         <button id="btn7Days">7天</button>
+                        <button id="btn15Days">15天</button>
                         <button id="btn30Days">30天</button>
                         <button id="btnAllDays" class="active">总览</button>
                         <button id="btnResetZoom">重置缩放</button>
@@ -2420,6 +2423,7 @@ try { applyLanguageStaticTexts(); } catch (e) {}
 
     const assignChartFilterHandlers = (roleId, store, breakdownStore, tagStore) => {
         const btn7 = document.getElementById('btn7Days');
+        const btn15 = document.getElementById('btn15Days');
         const btn30 = document.getElementById('btn30Days');
         const btnAll = document.getElementById('btnAllDays');
         const btnResetZoom = document.getElementById('btnResetZoom');
@@ -2462,9 +2466,10 @@ try { applyLanguageStaticTexts(); } catch (e) {}
             };
         }
 
-        if (btn7) btn7.onclick = () => { currentFilterDays = 7; setActiveButton(['btn7Days', 'btn30Days', 'btnAllDays'], 'btn7Days'); renderChart(roleId, store, breakdownStore, tagStore); };
-        if (btn30) btn30.onclick = () => { currentFilterDays = 30; setActiveButton(['btn7Days', 'btn30Days', 'btnAllDays'], 'btn30Days'); renderChart(roleId, store, breakdownStore, tagStore); };
-        if (btnAll) btnAll.onclick = () => { currentFilterDays = null; setActiveButton(['btn7Days', 'btn30Days', 'btnAllDays'], 'btnAllDays'); renderChart(roleId, store, breakdownStore, tagStore); };
+        if (btn7) btn7.onclick = () => { currentFilterDays = 7; setActiveButton(['btn7Days', 'btn15Days', 'btn30Days', 'btnAllDays'], 'btn7Days'); renderChart(roleId, store, breakdownStore, tagStore); };
+        if (btn15) btn15.onclick = () => { currentFilterDays = 15; setActiveButton(['btn7Days', 'btn15Days', 'btn30Days', 'btnAllDays'], 'btn15Days'); renderChart(roleId, store, breakdownStore, tagStore); };
+        if (btn30) btn30.onclick = () => { currentFilterDays = 30; setActiveButton(['btn7Days', 'btn15Days', 'btn30Days', 'btnAllDays'], 'btn30Days'); renderChart(roleId, store, breakdownStore, tagStore); };
+        if (btnAll) btnAll.onclick = () => { currentFilterDays = null; setActiveButton(['btn7Days', 'btn15Days', 'btn30Days', 'btnAllDays'], 'btnAllDays'); renderChart(roleId, store, breakdownStore, tagStore); };
         if (btnResetZoom) btnResetZoom.onclick = () => { resetChartZoom(chartInstance); chartInstance?.update(); };
 
         setActiveButton(['btnNetWorthMode', 'btnProfitMode'], mainMode === 'profit' ? 'btnProfitMode' : 'btnNetWorthMode');
@@ -2699,6 +2704,15 @@ container.appendChild(hint);
         });
     };
 
-    checkNetworthAndRun();
-    setInterval(checkNetworthAndRun, 1000);
+    const initObserver = () => {
+        const observer = new MutationObserver(() => {
+            // 库存面板
+            const inventory = document.querySelector('.Inventory_inventory__17CH2');
+            if (inventory) checkNetworthAndRun();
+        });
+        observer.observe(document.body, {childList: true, subtree: true});
+        window.addEventListener('beforeunload', () => observer.disconnect());
+    };
+
+    initObserver();
 })();

@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         [银河奶牛]装备数据同步
 // @namespace    http://tampermonkey.net/
-// @version      1.0.2
-// @description  1.在利润网站Milkonomy中同步用户生活装备数据；2.配装页面复制战斗模拟器配装数据（待开发）。
+// @version      1.2.5
+// @description  1.在利润网站Milkonomy中同步用户生活装备数据；2.配装页面复制战斗模拟器配装数据。
 // @author       Sunrishe
 // @website      https://greasyfork.org/zh-CN/scripts/574037
 // @website      https://gf.qytechs.cn/zh-CN/scripts/574037
 // @match        https://www.milkywayidle.com/game?characterId=*
 // @match        https://www.milkywayidlecn.com/game?characterId=*
 // @match        https://milkonomy.pages.dev/*
+// @match        https://hyhfish.github.io/milkonomy/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=milkywayidle.com
 // @grant        unsafeWindow
 // @grant        GM_addStyle
@@ -24,15 +25,6 @@
 (function (sbxWin, window) {
     'use strict';
 
-    // ==================== 样式 ====================
-    GM_addStyle(`
-        .EquipmentPanel_buttonContainer__c33hx {
-            display: flex;
-            grid-gap: var(--spacing-xs);
-            gap: var(--spacing-xs);
-        }
-    `);
-
     // ==================== 配置 ====================
     const hostname = window.location.hostname;
     const domainname = hostname.substring(hostname.lastIndexOf('.', hostname.lastIndexOf('.') - 1) + 1);
@@ -44,10 +36,11 @@
         mwiMilkonomyPreset: 'mwiMilkonomyPreset',
         // 游戏域名
         characterId: new URLSearchParams(window.location.search).get('characterId'),
+        hostname,
         domainname,
         // 网站类型判断
         isGameSite: domainname === 'milkywayidle.com' || domainname === 'milkywayidlecn.com',
-        isMilkonomySite: hostname === 'milkonomy.pages.dev',
+        isMilkonomySite: !(domainname === 'milkywayidle.com' || domainname === 'milkywayidlecn.com'),
         // LocalStorage Keys
         lsPresets: 'player-action-config-presets',
         // 组件样式
@@ -55,16 +48,43 @@
     };
 
     // ==================== 工具函数 ====================
-    function substrLastSlash(hrid) {
-        return hrid?.substring(hrid.lastIndexOf('/') + 1);
-    }
+    const utils = {
+        substrLastSlash(hrid) {
+            return hrid?.substring(hrid.lastIndexOf('/') + 1);
+        },
 
-    function getItemTypeSuffix(type) {
-        const suffix = substrLastSlash(type);
-        if (suffix.endsWith('_tool')) return 'tool';
-        if (suffix.endsWith('_charm')) return 'charm';
-        return suffix;
-    }
+        getItemTypeSuffix(type) {
+            const suffix = utils.substrLastSlash(type);
+            if (suffix.endsWith('_tool')) return 'tool';
+            if (suffix.endsWith('_charm')) return 'charm';
+            return suffix;
+        },
+
+        getReactProps(el) {
+            const key = Reflect.ownKeys(el || {}).find(k => k.startsWith('__reactProps$'));
+            return key ? el[key]?.children[0]?._owner?.memoizedProps : null;
+        },
+
+        getItemByHash(hash) {
+            if (!hash || !hash.includes('::')) return null;
+            const arr = hash.split('::') ?? [];
+            return arr.length !== 4 ? null : {characterId: arr[0], location: arr[1], itemHrid: arr[2], enhancementLevel: parseInt(arr[3])};
+        },
+
+        getTextBetween(start, end) {
+            let text = '';
+            let current = start.nextSibling;
+
+            while (current && current !== end) {
+                if (current.nodeType === 3) {
+                    text += current.textContent;
+                }
+                current = current.nextSibling;
+            }
+
+            return text;
+        }
+    };
 
     // ==================== WebSocket 拦截 ====================
     class WebSocketInterception {
@@ -141,8 +161,10 @@
     class Milkywayidle {
         constructor() {
             this.characterHouseRoomMap = null;
+            this.characterAchievements = null;
             this.ws = new WebSocketInterception(window);
             this._initWsListener();
+            this._injectStyle();
             this._initObserver();
         }
 
@@ -153,29 +175,57 @@
                     if (data.type === 'init_character_data') {
                         console.log('[EDS] 收到init_character_data消息');
                         this.characterHouseRoomMap = data.characterHouseRoomMap;
-                        PresetConverter.syncToGm(data);
+                        this.characterAchievements = data.characterAchievements;
+                        MilkonomyPresetConverter.syncToGm(data);
                         console.log('[EDS] 已将转换后的preset存入GM');
                     } else if (data.type === 'house_rooms_updated') {
                         console.log('[EDS] 收到house_rooms_updated消息');
                         this.characterHouseRoomMap = data.characterHouseRoomMap;
-                        PresetConverter.syncToGm(PresetConverter.loadGameData(data.characterHouseRoomMap));
+                        MilkonomyPresetConverter.syncToGm(MilkonomyPresetConverter.loadGameData(data.characterHouseRoomMap));
                         console.log('[EDS] 已将转换后的preset存入GM');
                     }
                 } catch {}
             });
         }
 
+        _injectStyle() {
+            GM_addStyle(`
+                .EquipmentPanel_buttonContainer__c33hx {
+                    display: flex;
+                    grid-gap: var(--spacing-xs);
+                    gap: var(--spacing-xs);
+                }
+
+                .LoadoutsPanel_loadoutsPanel__Gc5VA .LoadoutsPanel_selectedLoadout__1ozGd .LoadoutsPanel_details__3uO1G .LoadoutsPanel_setup__3mazG .LoadoutsPanel_buttonsContainer__8JWnI {
+                    display: flex;
+                    align-items: center;
+                    justify-content: flex-start !important; /* 改成左对齐 */
+                    grid-gap: var(--spacing-xs);
+                    gap: var(--spacing-xs);
+                }
+
+                /* 第一个按钮靠左，后面所有按钮挤到右边 */
+                .LoadoutsPanel_buttonsContainer__8JWnI button:first-child {
+                    margin-right: auto;
+                }
+            `);
+        }
+
         _initObserver() {
             const observer = new MutationObserver(() => {
+                // 装备面板
                 const equipmentPanel = document.querySelector('.EquipmentPanel_equipmentPanel__29pDG');
-                if (equipmentPanel) this._initCopyBtn(equipmentPanel);
-            });
+                if (equipmentPanel) this._initCopyMilkonomyBtn(equipmentPanel);
 
+                // 配装编辑面板
+                const loadoutsPanel = document.querySelector('.LoadoutsPanel_selectedLoadout__1ozGd');
+                if (loadoutsPanel) this._initCopyCombatSimulatorBtn(loadoutsPanel);
+            });
             observer.observe(document.body, {childList: true, subtree: true});
             window.addEventListener('beforeunload', () => observer.disconnect());
         }
 
-        _initCopyBtn(equipmentPanel) {
+        _initCopyMilkonomyBtn(equipmentPanel) {
             if (equipmentPanel.querySelector('.' + CONFIG.milkonomy.componentClass)) return;
 
             const buttonContainer = equipmentPanel.querySelector('.EquipmentPanel_buttonContainer__c33hx');
@@ -184,13 +234,133 @@
 
             this.copyMilkonomyBtn = lastButton.cloneNode(true);
             this.copyMilkonomyBtn.textContent = '复制Milkonomy数据';
+            this.copyMilkonomyBtn.title = '在Milkonomy网站预设方案编辑页面点导入按钮填入数据';
             this.copyMilkonomyBtn.classList.add(CONFIG.milkonomy.componentClass);
             this.copyMilkonomyBtn.onclick = () => {
-                const gameData = PresetConverter.loadGameData(this.characterHouseRoomMap);
-                const preset = PresetConverter.syncToGm(gameData);
+                const gameData = MilkonomyPresetConverter.loadGameData(this.characterHouseRoomMap);
+                const _preset = MilkonomyPresetConverter.syncToGm(gameData);
+                const preset = MilkonomyPresetConverter.filterConvertData(_preset);
                 GM_setClipboard(JSON.stringify(preset));
             };
             buttonContainer.appendChild(this.copyMilkonomyBtn);
+        }
+
+        _initCopyCombatSimulatorBtn(loadoutsPanel) {
+            if (loadoutsPanel.querySelector('.' + CONFIG.milkonomy.componentClass)) return;
+
+            const detailsEl = loadoutsPanel.querySelector('.LoadoutsPanel_details__3uO1G');
+            if (!this._isCombatLoadout(detailsEl)) return;
+
+            const buttonContainer = loadoutsPanel.querySelector('.LoadoutsPanel_buttonsContainer__8JWnI');
+            const buttons = buttonContainer.querySelectorAll('button');
+            const lastButton = buttons[buttons.length - 1];
+
+            this.copyCombatSimulatorBtn = lastButton.cloneNode(true);
+            this.copyCombatSimulatorBtn.textContent = '导出配装';
+            this.copyCombatSimulatorBtn.title = '导出战斗模拟器所需数据';
+            this.copyCombatSimulatorBtn.classList.add('Button_success__6d6kU');
+            this.copyCombatSimulatorBtn.classList.add(CONFIG.milkonomy.componentClass);
+            this.copyCombatSimulatorBtn.onclick = () => this._handleCopyCombatSimulator(detailsEl);
+            lastButton.before(this.copyCombatSimulatorBtn);
+        }
+
+        _isCombatLoadout(detailsEl) {
+            const useEl = detailsEl?.querySelector('.LoadoutsPanel_metadata__1TXX2 svg use');
+            return useEl?.getAttribute('href')?.split('#')?.[1] === 'combat';
+        }
+
+        _getLoadoutName(detailsEl) {
+            const titleEl = detailsEl.querySelector('.LoadoutsPanel_metadata__1TXX2');
+            const svgEl = titleEl.querySelector('svg');
+            const updateBtnEl = titleEl.querySelector('.Button_button__1Fe9z');
+            return utils.getTextBetween(svgEl, updateBtnEl)?.trim();
+        }
+
+        _handleCopyCombatSimulator(detailsEl) {
+            const name = this._getLoadoutName(detailsEl);
+            const data = utils.getReactProps(detailsEl) || {};
+            const loadoutInfo = Object.values(data.characterLoadoutDict || {}).find(v => v.name === name);
+            if (!loadoutInfo) {
+                alert('未找到配装方案');
+                return;
+            }
+            const otherInfo = {
+                characterSkills: [...data.characterSkillMap.values()],
+                characterAbilities: [...data.characterAbilityMap.values()],
+                characterHouseRoomMap: this.characterHouseRoomMap,
+                characterAchievements: this.characterAchievements
+            };
+            const convert = CombatSimulatorConverter.convert(loadoutInfo, otherInfo);
+            GM_setClipboard(JSON.stringify(convert));
+        }
+    }
+
+    class CombatSimulatorConverter {
+        static SKILLS = ['stamina', 'intelligence', 'attack', 'defense', 'melee', 'ranged', 'magic'];
+
+        static convert(loadoutInfo, {characterSkills, characterHouseRoomMap, characterAbilities, characterAchievements}) {
+            return {
+                player: {...this._getCombatLevelMap(characterSkills), equipment: this._getEquipments(loadoutInfo.wearableMap)},
+                food: {'/action_types/combat': this._getFoods(loadoutInfo.foodItemHrids)},
+                drinks: {'/action_types/combat': this._getDrinks(loadoutInfo.drinkItemHrids)},
+                abilities: this._getAbilities(loadoutInfo.abilityMap, characterAbilities),
+                triggerMap: this._getTriggerMap(loadoutInfo.abilityCombatTriggersMap, loadoutInfo.consumableCombatTriggersMap),
+                houseRooms: this._getHouseRoomMap(characterHouseRoomMap),
+                achievements: this._getAchievementMap(characterAchievements)
+            };
+        }
+
+        static _getCombatLevelMap(characterSkills) {
+            const res = {};
+            for (const skill of this.SKILLS) {
+                res[skill + 'Level'] = characterSkills?.find(v => v.skillHrid === '/skills/' + skill)?.level || 0;
+            }
+            return res;
+        }
+
+        static _getEquipments(wearableMap) {
+            const arr = [];
+            Object.entries(wearableMap)?.forEach(([loc, hash]) => {
+                const item = utils.getItemByHash(hash);
+                if (item) arr.push({itemLocationHrid: loc, itemHrid: item.itemHrid, enhancementLevel: item.enhancementLevel});
+            });
+            return arr;
+        }
+
+        static _getFoods(itemHrids) {
+            return itemHrids?.map(hrid => ({itemHrid: hrid})) || [];
+        }
+
+        static _getDrinks(itemHrids) {
+            return itemHrids?.map(hrid => ({itemHrid: hrid})) || [];
+        }
+
+        static _getAbilities(abilityMap, characterAbilities) {
+            const arr = [];
+            Object.entries(abilityMap)?.forEach(([, hrid]) => {
+                arr.push({abilityHrid: hrid, level: characterAbilities?.find(v => v.abilityHrid === hrid)?.level || 0});
+            });
+            return arr;
+        }
+
+        static _getTriggerMap(abilityCombatTriggersMap, consumableCombatTriggersMap) {
+            return {...abilityCombatTriggersMap, ...consumableCombatTriggersMap};
+        }
+
+        static _getHouseRoomMap(characterHouseRoomMap) {
+            const res = {};
+            Object.entries(characterHouseRoomMap)?.forEach(([hrid, data]) => {
+                res[hrid] = data.level;
+            });
+            return res;
+        }
+
+        static _getAchievementMap(characterAchievements) {
+            const res = {};
+            characterAchievements?.forEach(v => {
+                res[v.achievementHrid] = v.isCompleted;
+            });
+            return res;
         }
     }
 
@@ -232,8 +402,9 @@
         }
 
         _doSync() {
-            const preset = GM_getValue(CONFIG.mwiMilkonomyPreset);
-            if (!preset || !('name' in preset)) return;
+            const _preset = GM_getValue(CONFIG.mwiMilkonomyPreset);
+            if (!_preset || !('name' in _preset)) return;
+            const preset = MilkonomyPresetConverter.filterConvertData(_preset);
             const presets = JSON.parse(window.localStorage.getItem(CONFIG.lsPresets)) || [];
             let index = presets.findIndex(v => v.name === preset.name);
 
@@ -251,7 +422,7 @@
     }
 
     // ==================== 配装数据转换器 ====================
-    class PresetConverter {
+    class MilkonomyPresetConverter {
         // 生活装备配置（只包含需要同步的装备）
         static INCLUDE_ITEMS = {
             '/items/advanced_alchemy_charm': {
@@ -1609,11 +1780,113 @@
         static ACTION_LOCATIONS = ['tool', 'legs', 'body', 'charm'];
         static EQUIPMENT_LOCATIONS = ['off_hand', 'head', 'hands', 'feet', 'neck', 'earrings', 'ring', 'pouch'];
         static BUFF_TYPES = ['experience', 'gathering_quantity', 'production_efficiency', 'enhancing_speed'];
+        // 存储卷轴名称后缀跟buff名称不同的对应关系
+        static SCROLL_TO_PERSON_BUFF_MAP = {};
+        static ACHIEVEMENT_TIER_MAP = {
+            veteran: [
+                'bestiary_points_100',
+                'build_room_level_3',
+                'coinify_coins_1m',
+                'collection_points_500',
+                'cook_spaceberry_cake',
+                'defeat_chronofrost_sorcerer',
+                'defeat_jerry_t5',
+                'defeat_red_panda',
+                'enhance_to_10',
+                'labyrinth_floor_4',
+                'learn_special_ability',
+                'tailor_umbral_tunic',
+                'total_level_1000',
+                'woodcut_arcane_tree'
+            ],
+            novice: [
+                'bestiary_points_20',
+                'brew_gourmet_tea',
+                'cheesesmith_azure_tool',
+                'collection_points_100',
+                'defeat_marine_huntress',
+                'defeat_shoebill',
+                'enhance_to_3',
+                'learn_ability',
+                'tailor_medium_pouch',
+                'task_tokens_10',
+                'total_level_250'
+            ],
+            elite: [
+                'bestiary_points_200',
+                'brew_ultra_magic_coffee',
+                'build_room_level_6',
+                'clear_chimerical_den',
+                'clear_sinister_circus',
+                'collect_branch_of_insight',
+                'collect_butter_of_proficiency',
+                'collect_thread_of_expertise',
+                'collection_points_1000',
+                'craft_dungeon_equipment',
+                'defeat_crystal_colossus',
+                'defeat_dusk_revenant',
+                'enhance_level_80_to_10',
+                'equip_expert_task_badge',
+                'labyrinth_floor_6',
+                'total_level_1500'
+            ],
+            adept: [
+                'bestiary_points_40',
+                'build_room_level_1',
+                'buy_trainee_charm',
+                'collection_points_200',
+                'cook_peach_yogurt',
+                'craft_jewelry',
+                'decompose_bamboo_gloves',
+                'defeat_gobo_chieftain',
+                'defeat_luna_empress',
+                'defeat_the_watcher',
+                'enhance_to_6',
+                'equip_ginkgo_weapon',
+                'labyrinth_floor_2',
+                'total_level_500'
+            ],
+            champion: [
+                'bestiary_points_400',
+                'build_room_level_8',
+                'clear_enchanted_fortress',
+                'clear_pirate_cove',
+                'clear_t1_dungeon_10_times',
+                'collection_points_2000',
+                'craft_celestial_tool_or_outfit',
+                'craft_master_charm',
+                'defeat_demonic_overlord_t1',
+                'defeat_stalactite_golem_t5',
+                'enhance_level_90_to_10',
+                'labyrinth_floor_8',
+                'refine_dungeon_equipment',
+                'tailor_gluttonous_or_guzzling_pouch',
+                'total_level_1800',
+                'transmute_philosophers_stone'
+            ],
+            beginner: ['complete_tutorial', 'cook_apple_gummy', 'craft_wooden_bow', 'defeat_jerry', 'gather_milk', 'total_level_100']
+        };
+        static COMBAT_ACHIEVEMENTS = ['elite'];
 
-        static loadGameData(characterHouseRoomMap) {
+        static HOSTNAME_PROPS_FILTERED_MAP = {
+            DEFAULT: data => ({
+                actionConfigMap: data.actionConfigMap,
+                specialEquimentMap: data.specialEquimentMap,
+                communityBuffMap: data.communityBuffMap,
+                name: data.name,
+                color: data.color
+            }),
+            'hyhfish.github.io': data => data
+        };
+
+        static filterConvertData(convertData) {
+            const handler = this.HOSTNAME_PROPS_FILTERED_MAP[CONFIG.hostname] || this.HOSTNAME_PROPS_FILTERED_MAP.DEFAULT;
+            return handler(convertData);
+        }
+
+        static loadGameData(characterHouseRoomMap, characterAchievements) {
             const headerElement = document.querySelector('.Header_header__1DxsV');
-            const reactKey = Reflect.ownKeys(headerElement).find(key => key.startsWith('__reactProps'));
-            const game = headerElement[reactKey]?.children?.[0]?._owner?.memoizedProps ?? {};
+            const game = utils.getReactProps(headerElement) || {};
 
             return {
                 character: game.character,
@@ -1621,30 +1894,39 @@
                 characterHouseRoomMap,
                 characterSkills: [...game.characterSkillMap.values()],
                 actionTypeDrinkSlotsMap: game.actionTypeDrinkSlotsDict,
-                communityBuffs: game.communityBuffs
+                communityBuffs: game.communityBuffs,
+                characterAchievements,
+                characterBuffs: game.characterBuffs
             };
         }
 
         static syncToGm(characterData) {
-            const preset = PresetConverter.convert(characterData);
+            const preset = this.convert(characterData);
             GM_setValue(CONFIG.mwiMilkonomyPreset, preset);
             return preset;
         }
 
-        static convert({character, characterItems, characterSkills, characterHouseRoomMap, actionTypeDrinkSlotsMap, communityBuffs}) {
-            const validItems = PresetConverter._filterValidItems(characterItems);
+        static convert({
+            character,
+            characterItems,
+            characterSkills,
+            characterHouseRoomMap,
+            actionTypeDrinkSlotsMap,
+            communityBuffs,
+            characterAchievements,
+            characterBuffs
+        }) {
+            const validItems = this._filterValidItems(characterItems);
 
             return {
                 name: character?.name || CONFIG.characterId,
                 color: '#90ee90',
-                actionConfigMap: PresetConverter._convert2ActionConfig(
-                    characterSkills,
-                    characterHouseRoomMap,
-                    actionTypeDrinkSlotsMap,
-                    validItems
-                ),
-                specialEquimentMap: PresetConverter._convert2SpecialEquiment(validItems),
-                communityBuffMap: PresetConverter._convert2CommunityBuff(communityBuffs)
+                actionConfigMap: this._convert2ActionConfig(characterSkills, characterHouseRoomMap, actionTypeDrinkSlotsMap, validItems),
+                specialEquimentMap: this._convert2SpecialEquiment(validItems),
+                communityBuffMap: this._convert2CommunityBuff(communityBuffs),
+                // 以下是hyhfish.github.io特有字段
+                achievementBuffMap: this._convert2AchievementBuffMap(characterAchievements),
+                seals: this._convert2Seals(characterBuffs)
             };
         }
 
@@ -1652,10 +1934,10 @@
             const validItems = {};
 
             characterItems?.forEach(item => {
-                const info = PresetConverter.INCLUDE_ITEMS[item.itemHrid];
+                const info = this.INCLUDE_ITEMS[item.itemHrid];
                 if (!info) return;
 
-                const type = getItemTypeSuffix(info.type);
+                const type = utils.getItemTypeSuffix(info.type);
                 const typeData = validItems[type] || {};
                 let levelRequirements = info.levelRequirements || [];
 
@@ -1664,7 +1946,7 @@
                 }
 
                 levelRequirements.forEach(v => {
-                    const skill = substrLastSlash(v.skillHrid);
+                    const skill = utils.substrLastSlash(v.skillHrid);
                     let skillData = typeData[skill];
                     // 1.该部位未获取到数据
                     // 2.已获取数据不能是已穿戴
@@ -1696,11 +1978,11 @@
         static _convert2ActionConfig(characterSkills, characterHouseRoomMap, actionTypeDrinkSlotsMap, validItems) {
             const result = {};
 
-            for (const [skill, house] of Object.entries(PresetConverter.SKILL_TO_HOUSE_MAP)) {
+            for (const [skill, house] of Object.entries(this.SKILL_TO_HOUSE_MAP)) {
                 const aData = {action: skill};
                 aData.playerLevel = characterSkills?.find(v => v.skillHrid === '/skills/' + skill)?.level || 0;
 
-                for (const loc of PresetConverter.ACTION_LOCATIONS) {
+                for (const loc of this.ACTION_LOCATIONS) {
                     const items = validItems[loc];
                     const item = items?.[skill] || items?.all;
                     const type = loc === 'tool' ? skill + '_tool' : loc;
@@ -1718,7 +2000,7 @@
         static _convert2SpecialEquiment(validItems) {
             const result = {};
 
-            for (const loc of PresetConverter.EQUIPMENT_LOCATIONS) {
+            for (const loc of this.EQUIPMENT_LOCATIONS) {
                 const items = validItems[loc];
                 const item = items?.all || items?.[Object.keys(items || {})?.[0]];
                 result[loc] = item ? {type: loc, hrid: item.itemHrid, enhanceLevel: item.enhanceLevel} : {type: loc};
@@ -1731,13 +2013,40 @@
             const result = {};
 
             communityBuffs?.forEach(v => {
-                const type = substrLastSlash(v.hrid);
-                if (PresetConverter.BUFF_TYPES.includes(type)) {
+                const type = utils.substrLastSlash(v.hrid);
+                if (this.BUFF_TYPES.includes(type)) {
                     result[type] = {type, hrid: v.hrid, level: v.level};
                 }
             });
 
             return result;
+        }
+
+        static _convert2AchievementBuffMap(characterAchievements) {
+            const completedMap = {};
+            characterAchievements?.forEach(v => {
+                completedMap[utils.substrLastSlash(v.achievementHrid)] = v.isCompleted;
+            });
+            const res = {};
+            Object.entries(this.ACHIEVEMENT_TIER_MAP).forEach(([tier, achievements]) => {
+                if (this.COMBAT_ACHIEVEMENTS.includes(tier)) return;
+                const enabled = (achievements?.filter(v => !completedMap[v])?.length ?? 0) === 0;
+                res[tier] = {type: tier, enabled};
+            });
+            return res;
+        }
+
+        static _convert2Seals(characterBuffs) {
+            const now = Date.now();
+            return (
+                characterBuffs
+                    ?.filter(v => now < Date.parse(v.expiresAt))
+                    ?.map(v => {
+                        const buffHrid = utils.substrLastSlash(v.hrid);
+                        let itemId = this.SCROLL_TO_PERSON_BUFF_MAP?.[buffHrid] || 'seal_of_' + buffHrid;
+                        return '/items/' + itemId;
+                    }) || []
+            );
         }
     }
 
