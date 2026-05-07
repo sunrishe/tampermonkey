@@ -5,6 +5,10 @@
 
 ## 更新说明
 
+### v1.2.7
+1. 新利润网支持获取披风；
+2. 修复复制Milkonomy数据后的新利润网数据中丢失个人成就增益。
+
 ### v1.2.5
 1. 利润网支持https://hyhfish.github.io/milkonomy
 

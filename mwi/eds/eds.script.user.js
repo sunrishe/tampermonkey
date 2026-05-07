@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         [银河奶牛]装备数据同步
 // @namespace    http://tampermonkey.net/
-// @version      1.2.5
+// @version      1.2.7
 // @description  1.在利润网站Milkonomy中同步用户生活装备数据；2.配装页面复制战斗模拟器配装数据。
 // @author       Sunrishe
 // @website      https://greasyfork.org/zh-CN/scripts/574037
@@ -160,8 +160,7 @@
     // ==================== 游戏网站逻辑 ====================
     class Milkywayidle {
         constructor() {
-            this.characterHouseRoomMap = null;
-            this.characterAchievements = null;
+            this.specialData = {};
             this.ws = new WebSocketInterception(window);
             this._initWsListener();
             this._injectStyle();
@@ -174,14 +173,14 @@
                     const data = event.detail || {};
                     if (data.type === 'init_character_data') {
                         console.log('[EDS] 收到init_character_data消息');
-                        this.characterHouseRoomMap = data.characterHouseRoomMap;
-                        this.characterAchievements = data.characterAchievements;
+                        this.specialData.characterHouseRoomMap = data.characterHouseRoomMap;
+                        this.specialData.characterAchievements = data.characterAchievements;
                         MilkonomyPresetConverter.syncToGm(data);
                         console.log('[EDS] 已将转换后的preset存入GM');
                     } else if (data.type === 'house_rooms_updated') {
                         console.log('[EDS] 收到house_rooms_updated消息');
-                        this.characterHouseRoomMap = data.characterHouseRoomMap;
-                        MilkonomyPresetConverter.syncToGm(MilkonomyPresetConverter.loadGameData(data.characterHouseRoomMap));
+                        this.specialData.characterHouseRoomMap = data.characterHouseRoomMap;
+                        MilkonomyPresetConverter.syncToGm(MilkonomyPresetConverter.loadGameData(this.specialData));
                         console.log('[EDS] 已将转换后的preset存入GM');
                     }
                 } catch {}
@@ -237,7 +236,7 @@
             this.copyMilkonomyBtn.title = '在Milkonomy网站预设方案编辑页面点导入按钮填入数据';
             this.copyMilkonomyBtn.classList.add(CONFIG.milkonomy.componentClass);
             this.copyMilkonomyBtn.onclick = () => {
-                const gameData = MilkonomyPresetConverter.loadGameData(this.characterHouseRoomMap);
+                const gameData = MilkonomyPresetConverter.loadGameData(this.specialData);
                 const _preset = MilkonomyPresetConverter.syncToGm(gameData);
                 const preset = MilkonomyPresetConverter.filterConvertData(_preset);
                 GM_setClipboard(JSON.stringify(preset));
@@ -1777,7 +1776,7 @@
             enhancing: 'observatory'
         };
 
-        static ACTION_LOCATIONS = ['tool', 'legs', 'body', 'charm'];
+        static ACTION_LOCATIONS = ['tool', 'legs', 'body', 'charm', 'back'];
         static EQUIPMENT_LOCATIONS = ['off_hand', 'head', 'hands', 'feet', 'neck', 'earrings', 'ring', 'pouch'];
         static BUFF_TYPES = ['experience', 'gathering_quantity', 'production_efficiency', 'enhancing_speed'];
         // 存储卷轴名称后缀跟buff名称不同的对应关系
@@ -1869,13 +1868,21 @@
         static COMBAT_ACHIEVEMENTS = ['elite'];
 
         static HOSTNAME_PROPS_FILTERED_MAP = {
-            DEFAULT: data => ({
-                actionConfigMap: data.actionConfigMap,
-                specialEquimentMap: data.specialEquimentMap,
-                communityBuffMap: data.communityBuffMap,
-                name: data.name,
-                color: data.color
-            }),
+            DEFAULT: data => {
+                const actionConfigMap = Object.fromEntries(
+                    Object.entries(data.actionConfigMap ?? {}).map(([k, v]) => {
+                        const {back, ...rest} = v ?? {};
+                        return [k, rest];
+                    })
+                );
+                return ({
+                    actionConfigMap,
+                    specialEquimentMap: data.specialEquimentMap,
+                    communityBuffMap: data.communityBuffMap,
+                    name: data.name,
+                    color: data.color
+                });
+            },
             'hyhfish.github.io': data => data
         };
 
@@ -1884,7 +1891,7 @@
             return handler(convertData);
         }
 
-        static loadGameData(characterHouseRoomMap, characterAchievements) {
+        static loadGameData({characterHouseRoomMap, characterAchievements}) {
             const headerElement = document.querySelector('.Header_header__1DxsV');
             const game = utils.getReactProps(headerElement) || {};
 
