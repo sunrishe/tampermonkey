@@ -1,0 +1,10 @@
+.codex
+.idea/
+.playwright-cli/
+.playwright-mcp/
+.vscode/
+node_modules/
+openspec/
+
+.DS_Store
+npm-debug.log*
