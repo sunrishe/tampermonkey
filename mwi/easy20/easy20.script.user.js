@@ -1,23 +1,27 @@
 // ==UserScript==
-// @name         [银河奶牛]装备强化轻松+20（测试服专用）
-// @version      2.4.17
-// @namespace    http://tampermonkey.net/
-// @description  通过自由强化、批量强化基底、批量合成功能轻松完成物品的强化😀
-// @author       sunrishe
-// @website      https://greasyfork.org/zh-CN/scripts/567954
-// @website      https://gf.qytechs.cn/zh-CN/scripts/567954
-// @match        https://test.milkywayidle.com/*
-// @match        https://test.milkywayidlecn.com/*
-// @icon         https://www.google.com/s2/favicons?sz=64&domain=milkywayidle.com
-// @grant        GM_addStyle
-// @require      https://cdn.jsdelivr.net/npm/sweetalert2@11
-// @run-at       document-body
-// @license      MIT
-// @reference    脚本设计思路参考 https://greasyfork.org/zh-CN/scripts/560117
-// @reference    部分工具方法参考 https://greasyfork.org/zh-CN/scripts/538797
-// @homepage     https://github.com/sunrishe/tampermonkey/tree/master/mwi/easy20
-// @downloadURL https://update.greasyfork.org/scripts/567954/%5B%E9%93%B6%E6%B2%B3%E5%A5%B6%E7%89%9B%5D%E8%A3%85%E5%A4%87%E5%BC%BA%E5%8C%96%E8%BD%BB%E6%9D%BE%2B20%EF%BC%88%E6%B5%8B%E8%AF%95%E6%9C%8D%E4%B8%93%E7%94%A8%EF%BC%89.user.js
-// @updateURL https://update.greasyfork.org/scripts/567954/%5B%E9%93%B6%E6%B2%B3%E5%A5%B6%E7%89%9B%5D%E8%A3%85%E5%A4%87%E5%BC%BA%E5%8C%96%E8%BD%BB%E6%9D%BE%2B20%EF%BC%88%E6%B5%8B%E8%AF%95%E6%9C%8D%E4%B8%93%E7%94%A8%EF%BC%89.meta.js
+// @name               [银河奶牛]装备强化轻松+20（测试服专用）
+// @name:zh-CN         [银河奶牛]装备强化轻松+20（测试服专用）
+// @name:en            MWI Easy Equipment Enhance +20 (Test Server)
+// @version            2.5.0
+// @namespace          http://tampermonkey.net/
+// @description        通过自由强化、批量强化基底、批量合成功能轻松完成物品的强化😀
+// @description:zh-CN  通过自由强化、批量强化基底、批量合成功能轻松完成物品的强化😀
+// @description:en     Easily enhance equipment with custom enhancing, batch base enhancing, and batch merge features.
+// @author             sunrishe
+// @website            https://greasyfork.org/zh-CN/scripts/567954
+// @website            https://gf.qytechs.cn/zh-CN/scripts/567954
+// @match              https://test.milkywayidle.com/*
+// @match              https://test.milkywayidlecn.com/*
+// @icon               https://www.google.com/s2/favicons?sz=64&domain=milkywayidle.com
+// @grant              GM_addStyle
+// @require            https://cdn.jsdelivr.net/npm/sweetalert2@11
+// @run-at             document-body
+// @license            MIT
+// @reference          脚本设计思路参考 https://greasyfork.org/zh-CN/scripts/560117
+// @reference          部分工具方法参考 https://greasyfork.org/zh-CN/scripts/538797
+// @homepage           https://github.com/sunrishe/tampermonkey/tree/master/mwi/easy20
+// @downloadURL        https://update.greasyfork.org/scripts/567954/%5B%E9%93%B6%E6%B2%B3%E5%A5%B6%E7%89%9B%5D%E8%A3%85%E5%A4%87%E5%BC%BA%E5%8C%96%E8%BD%BB%E6%9D%BE%2B20%EF%BC%88%E6%B5%8B%E8%AF%95%E6%9C%8D%E4%B8%93%E7%94%A8%EF%BC%89.user.js
+// @updateURL          https://update.greasyfork.org/scripts/567954/%5B%E9%93%B6%E6%B2%B3%E5%A5%B6%E7%89%9B%5D%E8%A3%85%E5%A4%87%E5%BC%BA%E5%8C%96%E8%BD%BB%E6%9D%BE%2B20%EF%BC%88%E6%B5%8B%E8%AF%95%E6%9C%8D%E4%B8%93%E7%94%A8%EF%BC%89.meta.js
 // ==/UserScript==
 
 (function () {
@@ -33,6 +37,206 @@
     const reqSpamProtecTimeout = 3000; // 触发过快发送游戏指令的等待时间
     const addQueueSleepMinTime = 800; // 添加队列成功后的最小等待时间
     const addQueueSleepMaxTime = 1200; // 添加队列成功后的最大等待时间
+
+    const i18n = {
+        currentLang: 'en',
+        messages: {
+            confirm: {zh: '确认', en: 'Confirm'},
+            deny: {zh: '拒绝', en: 'Deny'},
+            cancel: {zh: '取消', en: 'Cancel'},
+            minute: {zh: '{0}分钟', en: '{0} min'},
+            second: {zh: '{0}秒', en: '{0} sec'},
+            freedom: {zh: '自由强化', en: 'Custom Enhancing'},
+            enhanceBaseBtn: {zh: '批量强化+{0}基底', en: 'Batch Enhance +{0} Bases'},
+            mergeBtn: {zh: '批量合成+{0}', en: 'Batch Merge to +{0}'},
+            stopTask: {zh: '停止任务', en: 'Stop Task'},
+            baseLabel: {zh: '+{0}基底', en: '+{0} Bases'},
+            mergeLabel: {zh: '+{0}合成', en: 'Merge to +{0}'},
+            wsNotConnected: {zh: 'WebSocket 未连接，无法发送消息', en: 'WebSocket is not connected.'},
+            sendUnexpectedError: {zh: '消息发送失败: 发生意外错误', en: 'Failed to send message: unexpected error.'},
+            sendSpamProtection: {zh: '消息发送失败: 请勿过快发送游戏指令', en: 'Failed to send message: please do not send game commands too quickly.'},
+            sendFailed: {zh: '消息发送失败: {0}', en: 'Failed to send message: {0}'},
+            sendTimeout: {zh: '消息发送超时，已等待{0}', en: 'Message send timed out after {0}.'},
+            userAbort: {zh: '用户中止任务', en: 'Task stopped by user.'},
+            taskBatchEnhanceBase: {zh: '批量强化基底', en: 'Batch Enhance Bases'},
+            taskBatchMerge: {zh: '批量合成+{0}', en: 'Batch Merge to +{0}'},
+            taskStopping: {zh: '⚠️ 批量任务停止中，请稍等', en: '⚠️ Task is stopping. Please wait.'},
+            taskRunning: {zh: '⚠️ {0}任务执行中，请等待执行完成后再试', en: '⚠️ {0} is running. Please wait until it finishes.'},
+            checkWsNotConnected: {
+                zh: '❌ WebSocket 未连接！请先手动点一次强化操作再试',
+                en: '❌ WebSocket is not connected. Please manually start one enhancing action first.',
+            },
+            itemInfoMissing: {zh: '❌ 未获取到物品信息！请确认已选择物品', en: '❌ Item info was not found. Please select an item.'},
+            normalEnhance: {zh: '普通强化', en: 'normal enhancing'},
+            philosopherMerge: {zh: '贤者之镜合成', en: "Philosopher's Mirror merge"},
+            repeatTimes: {zh: '重复{0}次', en: ', repeat {0} times'},
+            auto: {zh: '自动', en: 'auto'},
+            taskCount: {zh: '{0}个任务', en: '{0} tasks'},
+            freedomTips: {
+                zh:
+                    '1. 【极其重要】强化等级对应的物品必须存在，否则发起任务无响应页面假死，可以点击停止任务中止；\n' +
+                    '2. 【重要】不会检测库存，添加任务时请确保基础物品及强化资源足够，否则强化任务会提前结束；\n' +
+                    '3. 保护之镜强化会读取页面选择的配装方案，贤者之镜强化则使用无配装；\n' +
+                    '4. 使用页面选择的保护物品，请确保物品数量充足；\n' +
+                    '5. 不建议使用福气茶，会出现预估外的物品；\n' +
+                    '6. 不建议添加过多队列，否则等待时间会很长。',
+                en:
+                    '1. [Critical] The item at the selected enhancement level must exist, otherwise the queued action may not respond. Click Stop Task to stop it.\n' +
+                    '2. [Important] Inventory is not checked. Make sure base items and enhancing materials are enough, otherwise the enhancing action may end early.\n' +
+                    '3. Mirror Of Protection enhancing uses the selected Loadout. Philosopher\'s Mirror merge uses No Loadout.\n' +
+                    '4. Make sure you have enough selected protection items.\n' +
+                    '5. Blessed Tea is not recommended because it may create unexpected items.\n' +
+                    '6. Avoid adding too many Queued Actions, or waiting may take a long time.',
+            },
+            freedomUseInfo: {
+                zh:
+                    '[贤者之镜][[起始等级1~]起始等级2-]目标等级[:重复次数]:任务数量\n' +
+                    '[]的内容表示可省略，会取该项对应的默认值；贤者之镜用+表示；任务数量支持数字或@自动获取库存\n' +
+                    '使用保护之镜强化0到m共300个任务输入m:300\n' +
+                    '使用保护之镜强化n到m共300个任务输入n-m:300\n' +
+                    '使用保护之镜强化n到m重复100次共300个任务输入n-m:100:300\n' +
+                    '使用贤者之镜合成n到m共300个任务输入+n-m:300\n' +
+                    '请输入自由强化信息，多个任务用逗号隔开',
+                en:
+                    '[Philosopher\'s Mirror][[Start Level 1~]Start Level 2-]Target Level[:Repeat]:Task Count\n' +
+                    'Parts in [] are optional and use defaults. Prefix with + to use Philosopher\'s Mirror. Task count supports a number or @ for auto inventory count.\n' +
+                    'Mirror Of Protection from 0 to m, 300 tasks: m:300\n' +
+                    'Mirror Of Protection from n to m, 300 tasks: n-m:300\n' +
+                    'Mirror Of Protection from n to m, repeat 100 times, 300 tasks: n-m:100:300\n' +
+                    'Philosopher\'s Mirror from n to m, 300 tasks: +n-m:300\n' +
+                    'Enter custom enhancing rules. Separate multiple rules with commas.',
+            },
+            freedomTipTitle: {zh: '自由强化提示', en: 'Custom Enhancing Tips'},
+            freedomParseTitle: {zh: '自由强化解析结果', en: 'Custom Enhancing Parse Result'},
+            freedomParseFailed: {zh: '❌ 第{0}轮，无法解析{1}', en: '❌ Round {0}: cannot parse {1}'},
+            freedomParseLine: {
+                zh: '第{0}轮，{1}{2}+{3}到+{4}{5}共{6}',
+                en: 'Round {0}: {1} {2}+{3} to +{4}{5}, {6}',
+            },
+            freedomInfo: {zh: '第{0}轮，{1}{2}+{3}到+{4}', en: 'Round {0}: {1} {2}+{3} to +{4}'},
+            freedomAbort: {
+                zh: '🚫 自由强化中止！\n共发起 {0} 轮 {1} 次{2}强化任务，耗时{3}',
+                en: '🚫 Custom enhancing stopped.\nStarted {0} rounds and {1} {2} actions. Time: {3}',
+            },
+            freedomToastSuccess: {zh: '♻️ 自由强化，{0}: {1}/{2}任务执行成功', en: '♻️ Custom enhancing, {0}: task {1}/{2} succeeded.'},
+            freedomToastRetry: {
+                zh: '⚠️ 自由强化，{0}: {1}/{2}任务执行失败，重试第{3}次。{4}',
+                en: '⚠️ Custom enhancing, {0}: task {1}/{2} failed. Retry {3}. {4}',
+            },
+            freedomSuccess: {
+                zh: '✅ 自由强化完成！\n共发起 {0} 轮 {1} 次{2}强化任务，耗时{3}',
+                en: '✅ Custom enhancing completed.\nStarted {0} rounds and {1} {2} actions. Time: {3}',
+            },
+            freedomError: {zh: '❌ 自由强化任务出现异常，耗时{0}。{1}', en: '❌ Custom enhancing failed after {0}. {1}'},
+            lack: {zh: '缺{0}', en: ', missing {0}'},
+            extra: {zh: '多{0}', en: ', extra {0}'},
+            needEnhanceBase: {zh: '需强化{0}个底子', en: 'Need {0} base enhancing actions'},
+            mergeBaseEnough: {zh: '恭喜，合成+{0}底子已足够', en: 'Enough bases to merge to +{0}'},
+            needPhilosophersMirror: {zh: '需要{0}个贤者之镜', en: 'Need {0} Philosopher\'s Mirrors'},
+            needMergeTasks: {zh: '需执行{0}次合成任务', en: 'Need {0} merge tasks'},
+            waitBaseEnhance: {zh: '等待基底强化...', en: 'Waiting for base enhancing...'},
+            mergeItemLack: {zh: '合成+{0}物品不足', en: 'Not enough items to merge to +{0}'},
+            safeLimitExceeded: {
+                zh: '❌ 当前选择 ({0},{1}) 目标+{2}需要 {3} 次强化，超过安全上限 5000 次！\n建议选择更高等级对（如 (15,16) 以上）。',
+                en: '❌ Current pair ({0},{1}) to target +{2} needs {3} enhancing actions, exceeding the safety limit of 5000.\nChoose a higher pair, such as (15,16) or above.',
+            },
+            zeroEnhanceCount: {zh: '❌ 计算待强化次数为0，请检查选择', en: '❌ Calculated enhancing action count is 0. Please check the selection.'},
+            missingBaseItems: {zh: '❌ 还缺少{0} {1}个', en: '❌ Missing {1} {0}'},
+            baseEnhanceDone: {zh: '✅ 恭喜，基底强化完成', en: '✅ Base enhancing completed.'},
+            enhanceTips: {
+                zh:
+                    '1. 【重要】请准备充足的强化材料，否则强化任务会提前结束，后续强化队列清空；\n' +
+                    '2. 自动检测库存中物品是否充足，不足时会给出提示，不会检测已经装备的物品；\n' +
+                    '3. 计算强化队列会减掉库存内高于基底等级的物品数量；\n' +
+                    '4. 添加基底强化任务会使用页面选择的配装方案；\n' +
+                    '5. 使用页面选择的保护物品，请确保物品数量充足；\n' +
+                    '6. 不会检测任务队列，使用插件前建议先清空任务队列，否则会合成超过所需数量的物品；\n' +
+                    '7. 不建议使用福气茶，会出现预估外的物品；\n' +
+                    '8. 不要选择精炼物品进行强化，因为精炼物品强化需要普通物品升级，可以通过【炼金-解精炼】去掉精炼。',
+                en:
+                    '1. [Important] Prepare enough enhancing materials, otherwise the action may end early and later Queued Actions may be cleared.\n' +
+                    '2. Inventory items are checked automatically. Equipped items are not checked.\n' +
+                    '3. The queue calculation subtracts inventory items higher than the base level.\n' +
+                    '4. Base enhancing actions use the selected Loadout.\n' +
+                    '5. Make sure you have enough selected protection items.\n' +
+                    '6. The Action Queue is not checked. Clear it before using this script to avoid creating extra items.\n' +
+                    '7. Blessed Tea is not recommended because it may create unexpected items.\n' +
+                    '8. Do not select refined items. Enhancing refined items requires normal items. Use Alchemy - Unrefine first.',
+            },
+            enhanceAbort: {
+                zh: '🚫 批量强化基底中止！\n使用 ({0}, {1}) 目标+{2}，共发起 {3} 次{4}强化任务，耗时{5}',
+                en: '🚫 Batch enhance bases stopped.\nUsing ({0}, {1}) to target +{2}, started {3} {4} enhancing actions. Time: {5}',
+            },
+            enhanceToastSuccess: {
+                zh: '♻️ 批量强化基底，{0}+{1}: {2}/{3}任务执行成功',
+                en: '♻️ Batch enhance bases, {0}+{1}: task {2}/{3} succeeded.',
+            },
+            enhanceToastRetry: {
+                zh: '⚠️ 批量强化基底，{0}+{1}: {2}/{3}任务执行失败，重试第{4}次。{5}',
+                en: '⚠️ Batch enhance bases, {0}+{1}: task {2}/{3} failed. Retry {4}. {5}',
+            },
+            enhanceSuccess: {
+                zh: '✅ 批量强化基底完成！\n使用 ({0}, {1}) 目标+{2}，共发起 {3} 次{4}强化任务，耗时{5}',
+                en: '✅ Batch enhance bases completed.\nUsing ({0}, {1}) to target +{2}, started {3} {4} enhancing actions. Time: {5}',
+            },
+            enhanceError: {zh: '❌ 执行基底强化任务出现异常，耗时{0}。{1}', en: '❌ Batch enhance bases failed after {0}. {1}'},
+            mergeTips: {
+                zh:
+                    '1. 【重要】请准备充足的贤者之镜；\n' +
+                    '2. 贤者之镜强化使用无配装，因为配装方案的自动使用高等级和福气茶可能导致合成失败；\n' +
+                    '3. 不要选择精炼物品进行合成；\n' +
+                    '4. 不要使用福气茶，会出现预估外的物品，导致合成失败；\n' +
+                    '5. 合成队列添加失败可以等待现有队列执行完成后，再次点击合成按钮，会根据已有物品重新计算合成队列。',
+                en:
+                    '1. [Important] Prepare enough Philosopher\'s Mirrors.\n' +
+                    '2. Philosopher\'s Mirror enhancing uses No Loadout because auto higher-level items and Blessed Tea in Loadouts may cause merge failure.\n' +
+                    '3. Do not select refined items for merge.\n' +
+                    '4. Do not use Blessed Tea, because unexpected items may cause merge failure.\n' +
+                    '5. If adding the merge queue fails, wait for the current Queued Actions to finish and click merge again. The queue will be recalculated from current items.',
+            },
+            mergeTipTitle: {zh: '批量合成+{0}提示', en: 'Batch Merge to +{0} Tips'},
+            mergeAbort: {
+                zh: '🚫 批量合成+{0}中止！\n共发起 {1} 次{2}强化任务，耗时{3}',
+                en: '🚫 Batch merge to +{0} stopped.\nStarted {1} {2} enhancing actions. Time: {3}',
+            },
+            mergeToastSuccess: {
+                zh: '♻️ 批量合成+{0}，{1}{2}/{3}任务执行成功，{4}→{5}',
+                en: '♻️ Batch merge to +{0}, {1} task {2}/{3} succeeded, {4}->{5}.',
+            },
+            mergeToastRetry: {
+                zh: '⚠️ 批量合成+{0}，{1}{2}/{3}任务执行失败，{4}→{5}，重试第{6}次。{7}',
+                en: '⚠️ Batch merge to +{0}, {1} task {2}/{3} failed, {4}->{5}. Retry {6}. {7}',
+            },
+            mergeSuccess: {
+                zh: '✅ 批量合成+{0}任务完成！\n共发起 {1} 次{2}强化任务，耗时{3}',
+                en: '✅ Batch merge to +{0} completed.\nStarted {1} {2} enhancing actions. Time: {3}',
+            },
+            mergeError: {zh: '❌ 执行批量合成+{0}任务出现异常，耗时{1}。{2}', en: '❌ Batch merge to +{0} failed after {1}. {2}'},
+            mergeCheckFailed: {
+                zh: '❌ 执行批量合成+{0}任务失败，请检查物品数量是否充足',
+                en: '❌ Batch merge to +{0} failed. Please check whether item counts are enough.',
+            },
+            scriptLoaded: {zh: '🎯 [银河奶牛]装备强化轻松+20（测试服专用）脚本已加载', en: '🎯 MWI Easy +20 script loaded.'},
+        },
+        loadLangPref() {
+            try {
+                const gameLang = localStorage.getItem('i18nextLng') || '';
+                this.currentLang = gameLang.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+            } catch {
+                this.currentLang = 'en';
+            }
+        },
+        t(key, ...args) {
+            const entry = this.messages[key];
+            if (!entry) return key;
+            let text = entry[this.currentLang] || entry.zh || key;
+            args.forEach((arg, index) => {
+                text = text.replaceAll(`{${index}}`, String(arg ?? ''));
+            });
+            return text;
+        },
+    };
+    i18n.loadLangPref();
 
     // 引入SweetAlert2自定义样式
     GM_addStyle(`
@@ -89,7 +293,7 @@
     `);
 
     // 模态对话框
-    const swal2Base = {
+    const getSwal2Base = () => ({
         customClass: {container: 'diy-swal2-container'},
         heightAuto: false,
         draggable: true,
@@ -101,10 +305,10 @@
         cancelButtonColor: '#db3333',
         allowOutsideClick: false,
         allowEscapeKey: false,
-        confirmButtonText: '确认',
-        denyButtonText: '拒绝',
-        cancelButtonText: '取消',
-    };
+        confirmButtonText: i18n.t('confirm'),
+        denyButtonText: i18n.t('deny'),
+        cancelButtonText: i18n.t('cancel'),
+    });
     const modal = {
         useSweetAlert2: true,
         get native() {
@@ -131,7 +335,7 @@
             this._toast.fire({text});
         },
         _swal(options) {
-            return Swal.fire({...swal2Base, ...options});
+            return Swal.fire({...getSwal2Base(), ...options});
         },
         alert(text, title) {
             if (!text) return;
@@ -170,6 +374,10 @@
         _characterItemMapCacheTime: 0,
         _characterItemMapCacheTimeout: 5000, // 缓存5秒
 
+        getItemName(itemUse, itemId) {
+            const domName = itemUse?.parentNode?.getAttribute('aria-label') || '';
+            return domName || String(itemId || '').replace(/_/g, ' ');
+        },
         // 异步 sleep，支持随机延迟
         async sleep(ms) {
             return new Promise((resolve) => setTimeout(resolve, ms));
@@ -180,7 +388,7 @@
         },
         getShowTime(startTime) {
             const time = (new Date().getTime() - startTime) / 1000.0;
-            return time > 60 ? `${(time / 60).toFixed(1)}分钟` : `${time.toFixed(1)}秒`;
+            return time > 60 ? i18n.t('minute', (time / 60).toFixed(1)) : i18n.t('second', time.toFixed(1));
         },
         // 获取缓存的 characterItemMap
         getCharacterItemMap() {
@@ -262,7 +470,7 @@
             if (isDebug) return Promise.resolve({mock: true});
             // 检查连接是否可用
             if (ws?.readyState !== window.WebSocket.OPEN) {
-                return Promise.reject(new Error('WebSocket 未连接，无法发送消息'));
+                return Promise.reject(new Error(i18n.t('wsNotConnected')));
             }
             // 发送消息
             try {
@@ -293,31 +501,31 @@
                         }
                     } else if (receipt.type === 'error' && receipt.message === 'errorNotification.unexpectedError') {
                         cleanUp();
-                        reject(new Error(`消息发送失败: 发生意外错误`));
+                        reject(new Error(i18n.t('sendUnexpectedError')));
                     } else if (receipt.type === 'error' && receipt.message === 'errorNotification.requestSpamProtection') {
                         cleanUp();
                         await this.sleep(reqSpamProtecTimeout);
-                        reject(new Error(`消息发送失败: 请勿过快发送游戏指令`));
+                        reject(new Error(i18n.t('sendSpamProtection')));
                     }
                 };
 
                 // 监听发送失败的事件
                 const handleError = (error) => {
                     cleanUp();
-                    reject(new Error(`消息发送失败: ${error.message}`));
+                    reject(new Error(i18n.t('sendFailed', error.message)));
                 };
 
                 // 超时器，避免无限等待
                 const timeoutTimer = setTimeout(() => {
                     cleanUp();
-                    reject(new Error(`消息发送超时，已等待${utils.getShowTime(st)}`));
+                    reject(new Error(i18n.t('sendTimeout', utils.getShowTime(st))));
                 }, timeout);
 
                 // 监听停止信号
                 const intervalTimer = setInterval(() => {
                     if (components.taskStatus === -1) {
                         cleanUp();
-                        reject(new Error(`用户中止任务`));
+                        reject(new Error(i18n.t('userAbort')));
                     }
                 }, 100);
 
@@ -431,7 +639,7 @@
                 }
                 // 添加合成任务
                 if (levelCount[levelDown1] < 1 || levelCount[levelDown2] < 1) {
-                    throw new Error(`合成+${targetLevel}物品不足`);
+                    throw new Error(i18n.t('mergeItemLack', targetLevel));
                 } else {
                     mergeTask.push(levelDown1);
                     levelCount[targetLevel] += 1;
@@ -516,10 +724,10 @@
                 return sel;
             };
 
-            const freedomBtn = mkBtn('easy20-freedom-btn', '自由强化', '#a272e4', () => this.clickFreedomBtn());
-            const enhanceBtn = mkBtn('easy20-enhance-btn', '批量强化+20基底', '#4357af', () => this.clickEnhanceBtn());
-            const mergeBtn = mkBtn('easy20-merge-btn', '批量合成+20', '#2fc4a7', () => this.clickMergeBtn());
-            const stopBtn = mkBtn('easy20-stop-btn', '停止任务', '#db3333', () => this.clickStopBtn());
+            const freedomBtn = mkBtn('easy20-freedom-btn', i18n.t('freedom'), '#a272e4', () => this.clickFreedomBtn());
+            const enhanceBtn = mkBtn('easy20-enhance-btn', i18n.t('enhanceBaseBtn', 20), '#4357af', () => this.clickEnhanceBtn());
+            const mergeBtn = mkBtn('easy20-merge-btn', i18n.t('mergeBtn', 20), '#2fc4a7', () => this.clickMergeBtn());
+            const stopBtn = mkBtn('easy20-stop-btn', i18n.t('stopTask'), '#db3333', () => this.clickStopBtn());
 
             const buttonRow = document.createElement('div');
             buttonRow.className = 'easy20-component';
@@ -599,18 +807,31 @@
                 return [infoEle, label];
             };
 
-            [this.enhanceInfoEle, this.enhanceLabel] = mkInfoPanel('easy20-info-enhance-wrap', `+${targetLevel}基底`);
-            [this.mergeInfoEle, this.mergeLabel] = mkInfoPanel('easy20-info-merge-wrap', `+${targetLevel}合成`);
+            [this.enhanceInfoEle, this.enhanceLabel] = mkInfoPanel('easy20-info-enhance-wrap', i18n.t('baseLabel', targetLevel));
+            [this.mergeInfoEle, this.mergeLabel] = mkInfoPanel('easy20-info-merge-wrap', i18n.t('mergeLabel', targetLevel));
             this.changeSelectBtn();
         },
 
         getBaseInfo() {
             // 强化页面容器
             const root = document.querySelector('.EnhancingPanel_enhancingAction__2GJtD');
+            if (!root) {
+                return {
+                    itemId: null,
+                    itemName: '',
+                    protecId: null,
+                    loadoutId: 0,
+                    low: parseInt(this.selectBtn?.value || 0),
+                    targetLevel: parseInt(this.targetBtn?.value || 20),
+                    get levelCount() {
+                        return utils.getCountByIdAndMax(this.itemId, this.targetLevel);
+                    },
+                };
+            }
             // 获取选择的强化物品
             const itemUse = root.querySelector('.SkillActionDetail_primaryItemSelectorContainer__nrvNW use');
             const itemId = itemUse?.getAttribute('href')?.split('#')[1] ?? null;
-            const itemName = itemUse?.parentNode.getAttribute('aria-label') ?? '';
+            const itemName = utils.getItemName(itemUse, itemId);
             // 获取选择的保护物品
             const protecUse = root.querySelector('.SkillActionDetail_protectionItemInputContainer__35ChM .ItemSelector_itemSelector__2eTV6 use');
             const protecId = protecUse?.getAttribute('href')?.split('#')[1] ?? null;
@@ -636,12 +857,26 @@
             };
         },
 
+        getCurrentItemName(itemId, fallbackName = '') {
+            const root = document.querySelector('.EnhancingPanel_enhancingAction__2GJtD');
+            const itemUse = root?.querySelector('.SkillActionDetail_primaryItemSelectorContainer__nrvNW use');
+            const currentItemId = itemUse?.getAttribute('href')?.split('#')[1] ?? null;
+            if (currentItemId && currentItemId === itemId) {
+                return utils.getItemName(itemUse, itemId);
+            }
+            return fallbackName || String(itemId || '').replace(/_/g, ' ');
+        },
+
         checkTaskBefore(baseInfo) {
-            if (!ws) throw new Error('❌ WebSocket 未连接！请先手动点一次强化操作再试');
-            if (!baseInfo?.itemId) throw new Error('❌ 未获取到物品信息！请确认已选择物品');
-            const statusMsgs = {1: '批量强化基底', 2: `批量合成+${baseInfo.targetLevel}`, 3: '自由强化'};
-            if (this.taskStatus === -1) throw new Error('⚠️ 批量任务停止中，请稍等');
-            if (this.taskStatus > 0) throw new Error(`⚠️ ${statusMsgs[this.taskStatus] || '批量'}任务执行中，请等待执行完成后再试`);
+            if (!ws) throw new Error(i18n.t('checkWsNotConnected'));
+            if (!baseInfo?.itemId) throw new Error(i18n.t('itemInfoMissing'));
+            const statusMsgs = {
+                1: i18n.t('taskBatchEnhanceBase'),
+                2: i18n.t('taskBatchMerge', baseInfo.targetLevel),
+                3: i18n.t('freedom'),
+            };
+            if (this.taskStatus === -1) throw new Error(i18n.t('taskStopping'));
+            if (this.taskStatus > 0) throw new Error(i18n.t('taskRunning', statusMsgs[this.taskStatus] || i18n.t('taskBatchEnhanceBase')));
         },
 
         parseFreedomExpression(input) {
@@ -681,30 +916,14 @@
                 return;
             }
             const itemId = baseInfo.itemId;
-            const itemName = baseInfo.itemName;
+            const getItemName = () => this.getCurrentItemName(itemId, baseInfo.itemName);
             const loadoutId = baseInfo.loadoutId;
             const protecId = baseInfo.protecId;
 
             // 自由强化提示信息
-            const tips =
-                // '自由强化提示\n' +
-                '1. 【极其重要】强化等级对应的物品必须存在，否则发起任务无响应页面假死，可以点击停止任务中止；\n' +
-                '2. 【重要】不会检测库存，添加任务时请确保基础物品及强化资源足够，否则强化任务会提前结束；\n' +
-                '3. 保护之镜强化会读取页面选择的配装方案，贤者之镜强化则使用无配装；\n' +
-                '4. 使用页面选择的保护物品，请确保物品数量充足；\n' +
-                '5. 不建议使用福气茶，会出现预估外的物品；\n' +
-                '6. 不建议添加过多队列，否则等待时间会很长。';
-            if (!(await modal.confirm(tips, '自由强化提示'))) return;
+            if (!(await modal.confirm(i18n.t('freedomTips'), i18n.t('freedomTipTitle')))) return;
 
-            const useInfo =
-                '[贤者之镜][[起始等级1~]起始等级2-]目标等级[:重复次数]:任务数量\n' +
-                '[]的内容表示可省略，会取该项对应的默认值；贤者之镜用+表示；任务数量支持数字或@自动获取库存\n' +
-                '使用保护之镜强化0到m共300个任务输入m:300\n' +
-                '使用保护之镜强化n到m共300个任务输入n-m:300\n' +
-                '使用保护之镜强化n到m重复100次共300个任务输入n-m:100:300\n' +
-                '使用贤者之镜合成n到m共300个任务输入+n-m:300\n' +
-                '请输入自由强化信息，多个任务用逗号隔开';
-            const input = (await modal.prompt(useInfo, '自由强化')) || '';
+            const input = (await modal.prompt(i18n.t('freedomUseInfo'), i18n.t('freedom'))) || '';
 
             // 解析输入的表达式
             const result = this.parseFreedomExpression(input);
@@ -717,16 +936,27 @@
                 .map((v, i) => {
                     errCnt += v.success ? 0 : 1;
                     maxLevel = Math.max(maxLevel, v.start2);
+                    const repeatText = v.repeat === 0 ? '' : i18n.t('repeatTimes', v.repeat);
+                    const countText = i18n.t('taskCount', v.countAuto ? i18n.t('auto') : v.count);
                     return !v.success
-                        ? `❌ 第${i + 1}轮，无法解析${v.input}`
-                        : `第${i + 1}轮，${v.isProtec ? '普通强化' : '贤者之镜合成'}${itemName}+${v.start || v.start2}到+${v.target}${v.repeat === 0 ? '' : '重复' + v.repeat + '次'}共${v.countAuto ? '自动' : v.count}个任务`;
+                        ? i18n.t('freedomParseFailed', i + 1, v.input)
+                        : i18n.t(
+                              'freedomParseLine',
+                              i + 1,
+                              v.isProtec ? i18n.t('normalEnhance') : i18n.t('philosopherMerge'),
+                              getItemName(),
+                              v.start || v.start2,
+                              v.target,
+                              repeatText,
+                              countText,
+                          );
                 })
                 .join('\n');
             if (errCnt > 0) {
-                modal.alert(parseInfo, '自由强化解析结果');
+                modal.alert(parseInfo, i18n.t('freedomParseTitle'));
                 return;
             }
-            if (!(await modal.confirm(parseInfo, '自由强化解析结果'))) return;
+            if (!(await modal.confirm(parseInfo, i18n.t('freedomParseTitle')))) return;
 
             // 获取库存数量
             const levelCount = utils.getCountByIdAndMax(itemId, maxLevel);
@@ -743,7 +973,16 @@
                     let {count} = v;
                     const _loadoutId = isProtec ? loadoutId : 0;
                     if (countAuto) count = levelCount.slice(Math.max(0, start1), start2 + 1).reduce((sum, val) => sum + val, 0);
-                    const info = `第${round}轮，${isProtec ? '普通强化' : '贤者之镜合成'}${itemName}+${start || start2}到+${target}`;
+                    const getInfo = () =>
+                        i18n.t(
+                            'freedomInfo',
+                            round,
+                            isProtec ? i18n.t('normalEnhance') : i18n.t('philosopherMerge'),
+                            getItemName(),
+                            start || start2,
+                            target,
+                        );
+                    const info = getInfo();
                     console.log(`自由强化，匹配内容：${v.input}，${info}`, levelCount);
                     for (let i = 0; i < count; i++) {
                         // 查找实际起始等级
@@ -761,14 +1000,14 @@
                             try {
                                 if (this.taskStatus === -1) {
                                     modal.alert(
-                                        `🚫 自由强化中止！\n共发起 ${round} 轮 ${sum} 次${itemName}强化任务，耗时${utils.getShowTime(st)}`,
-                                        '自由强化',
+                                        i18n.t('freedomAbort', round, sum, getItemName(), utils.getShowTime(st)),
+                                        i18n.t('freedom'),
                                     );
                                     return;
                                 }
                                 const message = utils.createEnhanceMessage(itemId, cur, target, _loadoutId, isProtec, protecId, repeat);
                                 const result = await utils.sendEnhanceTask(ws, message);
-                                const msg = `♻️ 自由强化，${info}: ${i + 1}/${count}任务执行成功`;
+                                const msg = i18n.t('freedomToastSuccess', getInfo(), i + 1, count);
                                 // console.log(msg, message, result);
                                 modal.toast(msg);
                                 sum++;
@@ -776,7 +1015,7 @@
                                 break;
                             } catch (err) {
                                 if (retryCnt > retry) throw err;
-                                const msg = `⚠️ 自由强化，${info}: ${i + 1}/${count}任务执行失败，重试第${retryCnt}次。${err.message || ''}`;
+                                const msg = i18n.t('freedomToastRetry', getInfo(), i + 1, count, retryCnt, err.message || '');
                                 console.log(msg);
                                 modal.toast(msg);
                             }
@@ -784,10 +1023,10 @@
                     }
                 }
 
-                modal.alert(`✅ 自由强化完成！\n共发起 ${round} 轮 ${sum} 次${itemName}强化任务，耗时${utils.getShowTime(st)}`, '自由强化');
+                modal.alert(i18n.t('freedomSuccess', round, sum, getItemName(), utils.getShowTime(st)), i18n.t('freedom'));
             } catch (err) {
                 console.error(err);
-                modal.alert(`❌ 自由强化任务出现异常，耗时${utils.getShowTime(st)}。${err.message || ''}`, '自由强化');
+                modal.alert(i18n.t('freedomError', utils.getShowTime(st), err.message || ''), i18n.t('freedom'));
             } finally {
                 this.taskStatus = 0;
             }
@@ -797,24 +1036,29 @@
         changeSelectBtn() {
             const baseInfo = this.getBaseInfo();
             const itemId = baseInfo.itemId;
-            const itemName = baseInfo.itemName;
             const low = baseInfo.low; // 选中的基底等级
             const targetLevel = baseInfo.targetLevel; // 目标等级
 
             // 同步更新批量按钮文本
+            if (this.freedomBtn) {
+                this.freedomBtn.textContent = i18n.t('freedom');
+            }
             if (this.enhanceBtn) {
-                this.enhanceBtn.textContent = `批量强化+${targetLevel}基底`;
+                this.enhanceBtn.textContent = i18n.t('enhanceBaseBtn', targetLevel);
             }
             if (this.mergeBtn) {
-                this.mergeBtn.textContent = `批量合成+${targetLevel}`;
+                this.mergeBtn.textContent = i18n.t('mergeBtn', targetLevel);
+            }
+            if (this.stopBtn) {
+                this.stopBtn.textContent = i18n.t('stopTask');
             }
 
             // 更新标签文本
             if (this.enhanceLabel) {
-                this.enhanceLabel.textContent = `+${targetLevel}基底`;
+                this.enhanceLabel.textContent = i18n.t('baseLabel', targetLevel);
             }
             if (this.mergeLabel) {
-                this.mergeLabel.textContent = `+${targetLevel}合成`;
+                this.mergeLabel.textContent = i18n.t('mergeLabel', targetLevel);
             }
 
             if (!itemId) {
@@ -841,15 +1085,15 @@
                     let msg = `+${i}: ${exist}/${need}`;
                     if (lack > 0) {
                         lackSum += lack;
-                        msg += `缺${lack}`;
+                        msg += i18n.t('lack', lack);
                     } else if (lack < 0) {
-                        msg += `多${lack * -1}`;
+                        msg += i18n.t('extra', lack * -1);
                     }
                     enhanceInfoArr.push(msg);
                 }
             }
             if (lackSum > 0) {
-                enhanceInfoArr.push(`需强化${lackSum}个底子`);
+                enhanceInfoArr.push(i18n.t('needEnhanceBase', lackSum));
             }
 
             // 写入基底强化提示信息
@@ -863,14 +1107,14 @@
                 const mergeTask = utils.calcMergeTask(targetLevel, levelCount);
                 if (mergeTask.length > 0) {
                     const minMergeTask = utils.calcMinMergeTask(mergeTask);
-                    mergeInfoArr.push(`恭喜，合成+${targetLevel}底子已足够`);
-                    mergeInfoArr.push(`需要${mergeTask.length}个贤者之镜`);
-                    mergeInfoArr.push(`需执行${minMergeTask.length}次合成任务`);
+                    mergeInfoArr.push(i18n.t('mergeBaseEnough', targetLevel));
+                    mergeInfoArr.push(i18n.t('needPhilosophersMirror', mergeTask.length));
+                    mergeInfoArr.push(i18n.t('needMergeTasks', minMergeTask.length));
                 } else {
-                    mergeInfoArr.push('等待基底强化...');
+                    mergeInfoArr.push(i18n.t('waitBaseEnhance'));
                 }
             } catch (e) {
-                mergeInfoArr.push(`合成+${targetLevel}物品不足`);
+                mergeInfoArr.push(i18n.t('mergeItemLack', targetLevel));
             }
 
             // 写入合成提示信息
@@ -887,7 +1131,7 @@
                 return;
             }
             const itemId = baseInfo.itemId;
-            const itemName = baseInfo.itemName;
+            const getItemName = () => this.getCurrentItemName(itemId, baseInfo.itemName);
             const loadoutId = baseInfo.loadoutId;
             const low = baseInfo.low; // 选中的基底等级
             const targetLevel = baseInfo.targetLevel; // 目标等级
@@ -902,21 +1146,19 @@
             const sumEnhanceCount = enhanceCount.reduce((pv, cv) => pv + cv, 0);
 
             if (sumEnhanceCount > 5000) {
-                modal.toast(
-                    `❌ 当前选择 (${low},${low + 1}) 目标+${targetLevel}需要 ${sumEnhanceCount} 次强化，超过安全上限 5000 次！\n建议选择更高等级对（如 (15,16) 以上）。`,
-                );
+                modal.toast(i18n.t('safeLimitExceeded', low, low + 1, targetLevel, sumEnhanceCount));
                 return;
             }
 
             if (sumEnhanceCount === 0) {
-                modal.toast('❌ 计算待强化次数为0，请检查选择');
+                modal.toast(i18n.t('zeroEnhanceCount'));
                 return;
             }
 
             // 获取强化队列
             const enhanceTask = utils.calcEnhanceTask(levelCount, enhanceCount);
             if ((enhanceTask[0] ?? 0) > 0) {
-                modal.toast(`❌ 还缺少${itemName} ${enhanceTask[0]}个`);
+                modal.toast(i18n.t('missingBaseItems', getItemName(), enhanceTask[0]));
                 return;
             }
 
@@ -924,22 +1166,12 @@
             const enhanceTaskKeys = Object.keys(enhanceTask).sort((a, b) => a - b);
 
             if (enhanceTaskKeys.length === 0) {
-                modal.toast(`✅ 恭喜，基底强化完成`);
+                modal.toast(i18n.t('baseEnhanceDone'));
                 return;
             }
 
             // 弹出提示信息
-            const tips =
-                // '批量强化+20基底提示\n' +
-                '1. 【重要】请准备充足的强化材料，否则强化任务会提前结束，后续强化队列清空；\n' +
-                '2. 自动检测库存中物品是否充足，不足时会给出提示，不会检测已经装备的物品；\n' +
-                '3. 计算强化队列会减掉库存内高于基底等级的物品数量；\n' +
-                '4. 添加基底强化任务会使用页面选择的配装方案；\n' +
-                '5. 使用页面选择的保护物品，请确保物品数量充足；\n' +
-                '6. 不会检测任务队列，使用插件前建议先清空任务队列，否则会合成超过所需数量的物品；\n' +
-                '7. 不建议使用福气茶，会出现预估外的物品；\n' +
-                '8. 不要选择精炼物品进行强化，因为精炼物品强化需要普通物品升级，可以通过【炼金-解精炼】去掉精炼。';
-            if (!(await modal.confirm(tips, `批量强化+${targetLevel}`))) return;
+            if (!(await modal.confirm(i18n.t('enhanceTips'), i18n.t('enhanceBaseBtn', targetLevel)))) return;
 
             console.log(`批量强化基底，enhanceCount, enhanceTask`, enhanceCount, enhanceTask);
 
@@ -958,14 +1190,14 @@
                             try {
                                 if (this.taskStatus === -1) {
                                     modal.alert(
-                                        `🚫 批量强化基底中止！\n使用 (${low}, ${low + 1}) 目标+${targetLevel}，共发起 ${sum} 次${itemName}强化任务，耗时${utils.getShowTime(st)}`,
-                                        `批量强化+${targetLevel}基底`,
+                                        i18n.t('enhanceAbort', low, low + 1, targetLevel, sum, getItemName(), utils.getShowTime(st)),
+                                        i18n.t('enhanceBaseBtn', targetLevel),
                                     );
                                     return;
                                 }
                                 const message = utils.createEnhanceMessage(itemId, childTask[i], level, loadoutId, true, protecId);
                                 const result = await utils.sendEnhanceTask(ws, message);
-                                const msg = `♻️ 批量强化基底，${itemName}+${level}: ${i + 1}/${childTask.length}任务执行成功`;
+                                const msg = i18n.t('enhanceToastSuccess', getItemName(), level, i + 1, childTask.length);
                                 // console.log(msg, message, result);
                                 modal.toast(msg);
                                 sum++;
@@ -973,7 +1205,7 @@
                                 break;
                             } catch (err) {
                                 if (retryCnt > retry) throw err;
-                                const msg = `⚠️ 批量强化基底，${itemName}+${level}: ${i + 1}/${childTask.length}任务执行失败，重试第${retryCnt}次。${err.message || ''}`;
+                                const msg = i18n.t('enhanceToastRetry', getItemName(), level, i + 1, childTask.length, retryCnt, err.message || '');
                                 console.log(msg);
                                 modal.toast(msg);
                             }
@@ -982,14 +1214,14 @@
                 }
 
                 modal.alert(
-                    `✅ 批量强化基底完成！\n使用 (${low}, ${low + 1}) 目标+${targetLevel}，共发起 ${sum} 次${itemName}强化任务，耗时${utils.getShowTime(st)}`,
-                    `批量强化+${targetLevel}基底`,
+                    i18n.t('enhanceSuccess', low, low + 1, targetLevel, sum, getItemName(), utils.getShowTime(st)),
+                    i18n.t('enhanceBaseBtn', targetLevel),
                 );
             } catch (err) {
                 console.error(err);
                 modal.alert(
-                    `❌ 执行基底强化任务出现异常，耗时${utils.getShowTime(st)}。${err.message || ''}`,
-                    `批量强化+${targetLevel}基底`,
+                    i18n.t('enhanceError', utils.getShowTime(st), err.message || ''),
+                    i18n.t('enhanceBaseBtn', targetLevel),
                 );
             } finally {
                 this.taskStatus = 0;
@@ -1004,7 +1236,7 @@
                 return;
             }
             const itemId = baseInfo.itemId;
-            const itemName = baseInfo.itemName;
+            const getItemName = () => this.getCurrentItemName(itemId, baseInfo.itemName);
             const loadoutId = 0; // 合成使用无配装，避免配装影响合成
             const targetLevel = baseInfo.targetLevel; // 目标等级
 
@@ -1018,14 +1250,7 @@
                 const minMergeTask = utils.calcMinMergeTask(mergeTask);
 
                 // 弹出提示信息
-                const tips =
-                    // '批量合成+${targetLevel}提示\n' +
-                    '1. 【重要】请准备充足的贤者之镜；\n' +
-                    '2. 贤者之镜强化使用无配装，因为配装方案的自动使用高等级和福气茶可能导致合成失败；\n' +
-                    '3. 不要选择精炼物品进行合成；\n' +
-                    '4. 不要使用福气茶，会出现预估外的物品，导致合成失败；\n' +
-                    '5. 合成队列添加失败可以等待现有队列执行完成后，再次点击合成按钮，会根据已有物品重新计算合成队列。';
-                if (!(await modal.confirm(tips, `批量合成+${targetLevel}提示`))) return;
+                if (!(await modal.confirm(i18n.t('mergeTips'), i18n.t('mergeTipTitle', targetLevel)))) return;
 
                 console.log(`批量合成+${targetLevel}，levelCount, mergeTask, minMergeTask`, levelCount, mergeTask, minMergeTask);
 
@@ -1042,14 +1267,14 @@
                             try {
                                 if (this.taskStatus === -1) {
                                     modal.alert(
-                                        `🚫 批量合成+${targetLevel}中止！\n共发起 ${sum} 次${itemName}强化任务，耗时${utils.getShowTime(st)}`,
-                                        `批量合成+${targetLevel}`,
+                                        i18n.t('mergeAbort', targetLevel, sum, getItemName(), utils.getShowTime(st)),
+                                        i18n.t('mergeBtn', targetLevel),
                                     );
                                     return;
                                 }
                                 const message = utils.createEnhanceMessage(itemId, level, maxLevel, loadoutId, false);
                                 const result = await utils.sendEnhanceTask(ws, message);
-                                const msg = `♻️ 批量合成+${targetLevel}，${itemName}${i + 1}/${minMergeTask.length}任务执行成功，${level}→${maxLevel}`;
+                                const msg = i18n.t('mergeToastSuccess', targetLevel, getItemName(), i + 1, minMergeTask.length, level, maxLevel);
                                 // console.log(msg, message, result);
                                 modal.toast(msg);
                                 sum++;
@@ -1057,7 +1282,17 @@
                                 break;
                             } catch (err) {
                                 if (retryCnt > retry) throw err;
-                                const msg = `⚠️ 批量合成+${targetLevel}，${itemName}${i + 1}/${minMergeTask.length}任务执行失败，${level}→${maxLevel}，重试第${retryCnt}次。${err.message || ''}`;
+                                const msg = i18n.t(
+                                    'mergeToastRetry',
+                                    targetLevel,
+                                    getItemName(),
+                                    i + 1,
+                                    minMergeTask.length,
+                                    level,
+                                    maxLevel,
+                                    retryCnt,
+                                    err.message || '',
+                                );
                                 console.log(msg);
                                 modal.toast(msg);
                             }
@@ -1065,21 +1300,21 @@
                     }
 
                     modal.alert(
-                        `✅ 批量合成+${targetLevel}任务完成！\n共发起 ${sum} 次${itemName}强化任务，耗时${utils.getShowTime(st)}`,
-                        `批量合成+${targetLevel}`,
+                        i18n.t('mergeSuccess', targetLevel, sum, getItemName(), utils.getShowTime(st)),
+                        i18n.t('mergeBtn', targetLevel),
                     );
                 } catch (err) {
                     console.error(err);
                     modal.alert(
-                        `❌ 执行批量合成+${targetLevel}任务出现异常，耗时${utils.getShowTime(st)}。${err.message || ''}`,
-                        `批量合成+${targetLevel}`,
+                        i18n.t('mergeError', targetLevel, utils.getShowTime(st), err.message || ''),
+                        i18n.t('mergeBtn', targetLevel),
                     );
                 } finally {
                     this.taskStatus = 0;
                 }
             } catch (err) {
                 console.error(err);
-                modal.toast(`❌ 执行批量合成+${targetLevel}任务失败，请检查物品数量是否充足`);
+                modal.toast(i18n.t('mergeCheckFailed', targetLevel));
             }
         },
         clickStopBtn() {
@@ -1109,8 +1344,58 @@
 
         cancelHideQueuedActions() {
             document.querySelector('#easy20-hide-queued-actions')?.remove();
+        },
+
+        refreshLanguage() {
+            utils.clearItemMapCache();
+            this.changeSelectBtn();
         }
     };
+
+    class LanguageController {
+        constructor() {
+            this.isInitialized = false;
+        }
+
+        patchLocalStorageEvent() {
+            if (localStorage._easy20SetItemPatched) return;
+            const originalSetItem = localStorage.setItem;
+            localStorage.setItem = function (key, value) {
+                const oldValue = localStorage.getItem(key);
+                originalSetItem.apply(this, arguments);
+                const event = new Event('easy20-local-storage-changed');
+                event.key = key;
+                event.oldValue = oldValue;
+                event.newValue = value;
+                window.dispatchEvent(event);
+            };
+            localStorage._easy20SetItemPatched = true;
+        }
+
+        syncFromGameSetting(nextValue) {
+            const nextLang = nextValue?.toLowerCase()?.startsWith('zh') ? 'zh' : 'en';
+            if (i18n.currentLang === nextLang) return;
+            i18n.currentLang = nextLang;
+            components.refreshLanguage();
+        }
+
+        init() {
+            if (this.isInitialized) return;
+            this.isInitialized = true;
+            this.patchLocalStorageEvent();
+            window.addEventListener('easy20-local-storage-changed', (event) => {
+                if (event.key === 'i18nextLng') this.syncFromGameSetting(event.newValue);
+            });
+            window.addEventListener('storage', (event) => {
+                if (event.key === 'i18nextLng') this.syncFromGameSetting(event.newValue);
+            });
+            window.addEventListener('MWILangChanged', () => {
+                this.syncFromGameSetting(localStorage.getItem('i18nextLng'));
+            });
+        }
+    }
+
+    new LanguageController().init();
 
     // Hook WebSocket（支持所有域名）
     const origDataGet = Object.getOwnPropertyDescriptor(MessageEvent.prototype, 'data').get;
@@ -1188,5 +1473,5 @@
     // 页面卸载时断开 observer，避免内存泄漏
     window.addEventListener('beforeunload', () => observer.disconnect());
 
-    console.log('🎯 [银河奶牛]装备强化轻松+20（测试服专用）脚本已加载');
+    console.log(i18n.t('scriptLoaded'));
 })();

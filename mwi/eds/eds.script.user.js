@@ -286,8 +286,8 @@
             const otherInfo = {
                 characterSkills: [...data.characterSkillMap.values()],
                 characterAbilities: [...data.characterAbilityMap.values()],
-                characterHouseRoomMap: this.characterHouseRoomMap,
-                characterAchievements: this.characterAchievements
+                characterHouseRoomMap: this.specialData.characterHouseRoomMap,
+                characterAchievements: this.specialData.characterAchievements
             };
             const convert = CombatSimulatorConverter.convert(loadoutInfo, otherInfo);
             GM_setClipboard(JSON.stringify(convert));

@@ -6,11 +6,11 @@
 ## 更新说明
 
 ### v1.2.7
-1. 新利润网支持获取披风；
-2. 修复复制Milkonomy数据后的新利润网数据中丢失个人成就增益。
+1. 新利润网（hyhfish 改版）支持获取披风；
+2. 修复复制 Milkonomy 数据后，新利润网数据中丢失个人成就增益的问题。
 
 ### v1.2.5
-1. 利润网支持https://hyhfish.github.io/milkonomy
+1. 增加对新利润网 https://hyhfish.github.io/milkonomy 的支持。
 
 ### v1.1.3
 1. 战斗配装支持复制战斗模拟器格式的配装数据；

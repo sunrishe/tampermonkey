@@ -3,9 +3,9 @@
 // @name:zh-CN   [银河奶牛]生产采集增强优化
 // @name:en      MWI Production & Gathering Enhanced
 // @namespace    http://tampermonkey.net/
-// @version      3.6.8.10
-// @description  计算生产、强化、房屋所需材料并一键购买；计算生产与炼金实时利润；按照目标材料数量进行采集；快速切换角色；自动收集市场订单；功能支持自定义开关。
-// @description:en  Calculates the materials required for production, enhancement, and housing, and allows one-click purchasing; calculates real-time profit for production and alchemy; gathers resources based on target material quantities; supports quick character switching; automatically collects market orders; all features support customizable toggles.
+// @version      3.6.8.11
+// @description  计算生产、强化、房屋所需材料并一键购买；计算生产与炼金实时利润；按照目标材料数量进行采集；自动收集市场订单；功能支持自定义开关。
+// @description:en  Calculates the materials required for production, enhancement, and housing, and allows one-click purchasing; calculates real-time profit for production and alchemy; gathers resources based on target material quantities; automatically collects market orders; all features support customizable toggles.
 // @author       XIxixi297
 // @license      CC-BY-NC-SA-4.0
 // @website      https://github.com/CYR2077/MWI-Production-Gathering-Enhanced
@@ -36,7 +36,6 @@
         universalProfit: true,
         alchemyProfit: true,
         gatheringEnhanced: true,
-        characterSwitcher: true,
         considerArtisanTea: true,
         autoClaimMarketListings: false,
         considerRareLoot: false,
@@ -72,7 +71,6 @@
         alchemyCalculator: null,
         universalCalculator: null,
         shoppingCart: null,
-        characterSwitcher: null,
         materialPurchase: null,
         autoClaimMarketListings: null,
         considerRareLoot: null,
@@ -87,16 +85,6 @@
         ALCHEMY_CACHE_EXPIRY: 300000,
         UNIVERSAL_CACHE_EXPIRY: 300000,
         APIENDPOINT: 'mwi-market',
-
-        CHARACTER_SWITCHER: {
-            autoInit: true,
-            avatarSelector: '.Header_avatar__2RQgo',
-            characterInfoSelector: '.Header_characterInfo__3ixY8',
-            animationDuration: 200,
-            dropdownMaxHeight: '25rem',
-            dropdownMinWidth: '17.5rem',
-            dropdownMaxWidth: '25rem'
-        },
 
         COLORS: {
             buy: 'var(--color-market-buy)',
@@ -127,14 +115,6 @@
         error: '出错，请检查控制台', wsNotAvailable: 'WebSocket接口未可用', waiting: '等待接口就绪...',
         ready: '接口已就绪！', success: '成功', each: '个', allFailed: '全部失败',
         targetLabel: '目标',
-
-        switchCharacter: '切换角色',
-        noCharacterData: '暂无角色数据，请刷新页面重试',
-        current: '当前', switch: '切换', standard: '标准', ironcow: '铁牛',
-        lastOnline: '上次在线',
-        timeAgo: {
-            justNow: '刚刚', minutesAgo: '分钟前', hoursAgo: '小时', daysAgo: '天前'
-        },
 
         askBuyBidSell: '左买右卖', askBuyAskSell: '左买左卖',
         bidBuyAskSell: '右买左卖', bidBuyBidSell: '右买右卖',
@@ -199,10 +179,6 @@
                 title: '采集增强功能',
                 description: '添加目标数量设置，达到目标后自动停止采集 (刷新后生效)'
             },
-            characterSwitcher: {
-                title: '快速角色切换',
-                description: '点击头像快速切换角色，显示角色在线状态 (刷新后生效)'
-            },
             autoClaimMarketListings: {
                 title: '自动收集市场订单',
                 description: '当有市场订单可收集时自动收集物品或金币'
@@ -233,14 +209,6 @@
         error: 'error, check console', wsNotAvailable: 'WebSocket interface not available', waiting: 'Waiting for interface...',
         ready: 'Interface ready!', success: 'Successfully', each: '', allFailed: 'All failed',
         targetLabel: 'Target',
-
-        switchCharacter: 'Switch Character',
-        noCharacterData: 'No character data available, please refresh the page',
-        current: 'Current', switch: 'Switch', standard: 'Standard', ironcow: 'IronCow',
-        lastOnline: 'Last online',
-        timeAgo: {
-            justNow: 'just now', minutesAgo: 'min ago', hoursAgo: 'hr', daysAgo: 'd ago'
-        },
 
         askBuyBidSell: 'AskBuyBidSell', askBuyAskSell: 'AskBuyAskSell',
         bidBuyAskSell: 'BidBuyAskSell', bidBuyBidSell: 'BidBuyBidSell',
@@ -304,10 +272,6 @@
             gatheringEnhanced: {
                 title: 'Gathering Enhancement',
                 description: 'Add target quantity setting, auto-stop gathering when target reached (Apply after refresh)'
-            },
-            characterSwitcher: {
-                title: 'Quick Character Switching',
-                description: 'Click avatar to quickly switch characters, show online status (Apply after refresh)'
             },
             autoClaimMarketListings: {
                 title: 'Auto Claim Market Listings',
@@ -1993,15 +1957,6 @@
                     </label>
                 </div>
 
-                <div class="custom-tab-option">
-                    <input type="checkbox" id="characterSwitcher" ${window.PGE_CONFIG?.characterSwitcher ? 'checked' : ''}>
-                    <label for="characterSwitcher">
-                        <strong>👤 ${LANG.settings.characterSwitcher.title}</strong><br>
-                        <span style="font-size: 0.75rem; opacity: 0.8;">${LANG.settings.characterSwitcher.description}</span>
-                    </label>
-                </div>
-
-
                 <div class="custom-tab-actions">
                     <button class="custom-tab-button" onclick="window.settingsTabManager.resetSettings()">
                         ${LANG.settings.resetToDefault}
@@ -2094,7 +2049,6 @@
                 universalProfit: true,
                 alchemyProfit: true,
                 gatheringEnhanced: true,
-                characterSwitcher: true,
                 considerArtisanTea: true,
                 autoClaimMarketListings: false,
                 considerRareLoot: false,
@@ -2241,412 +2195,6 @@
         // 清理资源
         cleanup() {
             this.stopObserving();
-        }
-    }
-
-    // ==================== 角色快速切换 ====================
-    class CharacterSwitcher {
-        constructor(options = {}) {
-            this.config = { ...CONFIG.CHARACTER_SWITCHER, ...options };
-            this.charactersCache = null;
-            this.rawCharactersData = null;
-            this.isLoadingCharacters = false;
-            this.observer = null;
-            this.init();
-        }
-
-        init() {
-            this.setupEventListeners();
-            this.startObserver();
-        }
-
-        getCurrentLanguage() {
-            return (navigator.language || 'en').startsWith('zh') ? 'zh' : 'en';
-        }
-
-        getText(key) {
-            return LANG[key] || key;
-        }
-
-        getTimeAgoText(key) {
-            return LANG.timeAgo?.[key] || key;
-        }
-
-        getCurrentCharacterId() {
-            return new URLSearchParams(window.location.search).get('characterId');
-        }
-
-        getApiUrl() {
-            return sbxWin.mwiHelper.environments.isTestServer
-                ? 'https://api-test.' + sbxWin.mwiHelper.environments.domainname + '/v1/characters'
-                : 'https://api.' + sbxWin.mwiHelper.environments.domainname + '/v1/characters';
-        }
-
-        getTimeAgo(lastOfflineTime) {
-            if (!lastOfflineTime) return this.getTimeAgoText('justNow');
-
-            const diffMs = Date.now() - new Date(lastOfflineTime);
-            const diffMinutes = Math.floor(diffMs / 60000);
-            const diffHours = Math.floor(diffMs / 3600000);
-            const diffDays = Math.floor(diffMs / 86400000);
-
-            if (diffMinutes < 1) return this.getTimeAgoText('justNow');
-            if (diffMinutes < 60) return `${diffMinutes}${this.getTimeAgoText('minutesAgo')}`;
-            if (diffHours < 24) {
-                const remainingMinutes = diffMinutes % 60;
-                return remainingMinutes > 0 ?
-                    `${diffHours}${this.getTimeAgoText('hoursAgo')}${remainingMinutes}${this.getTimeAgoText('minutesAgo')}` :
-                    `${diffHours}${this.getTimeAgoText('hoursAgo')}`;
-            }
-            return `${diffDays}${this.getTimeAgoText('daysAgo')}`;
-        }
-
-        async fetchCharactersFromAPI() {
-            const response = await window.fetch(this.getApiUrl(), {
-                method: 'GET',
-                headers: { 'Content-Type': 'application/json' },
-                credentials: 'include'
-            });
-
-            if (!response.ok) throw new Error(`API请求失败: ${response.status}`);
-            const data = await response.json();
-            return data.characters || [];
-        }
-
-        processCharacters(charactersData) {
-            return charactersData.map(character => {
-                if (!character.id || !character.name) return null;
-
-                const mode = character.gameMode === 'standard' ? this.getText('standard') :
-                    character.gameMode === 'ironcow' ? this.getText('ironcow') : '';
-                const displayText = mode ? `${mode}(${character.name})` : character.name;
-
-                return {
-                    id: character.id,
-                    name: character.name,
-                    mode, gameMode: character.gameMode,
-                    link: `${window.location.origin}/game?characterId=${character.id}`,
-                    displayText,
-                    isOnline: character.isOnline,
-                    lastOfflineTime: character.lastOfflineTime,
-                    lastOnlineText: this.getTimeAgo(character.lastOfflineTime)
-                };
-            }).filter(Boolean);
-        }
-
-        refreshTimeDisplay(characters) {
-            return characters.map(character => ({
-                ...character,
-                lastOnlineText: this.getTimeAgo(character.lastOfflineTime)
-            }));
-        }
-
-        async getCharacters(forceRefreshTime = false) {
-            if (this.isLoadingCharacters) {
-                while (this.isLoadingCharacters) {
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                }
-                if (forceRefreshTime && this.rawCharactersData) {
-                    return this.refreshTimeDisplay(this.processCharacters(this.rawCharactersData));
-                }
-                return this.charactersCache || [];
-            }
-
-            if (this.charactersCache && forceRefreshTime && this.rawCharactersData) {
-                return this.refreshTimeDisplay(this.processCharacters(this.rawCharactersData));
-            }
-
-            if (this.charactersCache) return this.charactersCache;
-
-            this.isLoadingCharacters = true;
-            try {
-                const charactersData = await this.fetchCharactersFromAPI();
-                this.rawCharactersData = charactersData;
-                this.charactersCache = this.processCharacters(charactersData);
-                return this.charactersCache;
-            } catch (error) {
-                console.log('获取角色数据失败:', error);
-                return [];
-            } finally {
-                this.isLoadingCharacters = false;
-            }
-        }
-
-        async preloadCharacters() {
-            try {
-                await this.getCharacters();
-            } catch (error) {
-                console.log('预加载角色数据失败:', error);
-            }
-        }
-
-        clearCache() {
-            this.charactersCache = null;
-            this.rawCharactersData = null;
-        }
-
-        async forceRefresh() {
-            this.clearCache();
-            return await this.getCharacters();
-        }
-
-        addAvatarClickHandler() {
-            const avatar = document.querySelector(this.config.avatarSelector);
-            if (!avatar) return;
-
-            if (avatar.hasAttribute('data-character-switch-added')) return;
-
-            avatar.setAttribute('data-character-switch-added', 'true');
-            Object.assign(avatar.style, { cursor: 'pointer' });
-            avatar.title = 'Click to switch character';
-
-            if (!this.charactersCache && !this.isLoadingCharacters) {
-                this.preloadCharacters();
-            }
-
-            avatar.addEventListener('mouseenter', () => {
-                Object.assign(avatar.style, {
-                    backgroundColor: 'var(--item-background-hover)',
-                    borderColor: 'var(--item-border-hover)',
-                    boxShadow: '0 0 0.5rem rgba(152, 167, 233, 0.5)',
-                    transition: 'all 0.2s ease'
-                });
-            });
-
-            avatar.addEventListener('mouseleave', () => {
-                Object.assign(avatar.style, { backgroundColor: '', borderColor: '', boxShadow: '' });
-            });
-
-            avatar.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                this.toggleDropdown();
-            });
-        }
-
-        toggleDropdown() {
-            const existing = document.querySelector('#character-switch-dropdown');
-            if (existing) {
-                if (existing.style.opacity === '0') return;
-                this.closeDropdown();
-            } else {
-                this.createDropdown();
-            }
-        }
-
-        closeDropdown() {
-            const existing = document.querySelector('#character-switch-dropdown');
-            if (existing) {
-                existing.style.opacity = '0';
-                existing.style.transform = 'translateY(-0.625rem)';
-                setTimeout(() => {
-                    if (existing.parentNode) existing.remove();
-                }, this.config.animationDuration);
-            }
-        }
-
-        async createDropdown() {
-            const avatar = document.querySelector(this.config.avatarSelector);
-            if (!avatar) return;
-
-            const dropdown = document.createElement('div');
-            dropdown.id = 'character-switch-dropdown';
-            Object.assign(dropdown.style, {
-                position: 'absolute', top: '100%', right: '0',
-                backgroundColor: 'rgba(30, 30, 50, 0.95)',
-                border: '1px solid rgba(255, 255, 255, 0.2)',
-                borderRadius: '0.5rem', padding: '0.5rem',
-                minWidth: this.config.dropdownMinWidth,
-                maxWidth: this.config.dropdownMaxWidth,
-                maxHeight: this.config.dropdownMaxHeight,
-                overflowY: 'auto', backdropFilter: 'blur(0.625rem)',
-                boxShadow: '0 0.25rem 1.25rem rgba(0, 0, 0, 0.3)',
-                zIndex: '9999', marginTop: '0.3125rem',
-                opacity: '0', transform: 'translateY(-0.625rem)',
-                transition: `opacity ${this.config.animationDuration}ms ease, transform ${this.config.animationDuration}ms ease`
-            });
-
-            const title = document.createElement('div');
-            title.textContent = this.getText('switchCharacter');
-            Object.assign(title.style, {
-                color: 'rgba(255, 255, 255, 0.9)', fontSize: '0.875rem', fontWeight: 'bold',
-                padding: '0.5rem 0.75rem', borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
-                marginBottom: '0.5rem'
-            });
-            dropdown.appendChild(title);
-
-            const characterInfo = document.querySelector(this.config.characterInfoSelector);
-            if (characterInfo) {
-                characterInfo.style.position = 'relative';
-                characterInfo.appendChild(dropdown);
-            }
-
-            requestAnimationFrame(() => {
-                dropdown.style.opacity = '1';
-                dropdown.style.transform = 'translateY(0)';
-            });
-
-            if (!this.charactersCache) {
-                const loadingMsg = document.createElement('div');
-                loadingMsg.className = 'loading-indicator';
-                loadingMsg.textContent = 'Loading...';
-                Object.assign(loadingMsg.style, {
-                    color: 'rgba(255, 255, 255, 0.6)', fontSize: '0.75rem',
-                    padding: '0.5rem 0.75rem', textAlign: 'center', fontStyle: 'italic'
-                });
-                dropdown.appendChild(loadingMsg);
-            }
-
-            try {
-                const characters = await this.getCharacters(true);
-                const loadingMsg = dropdown.querySelector('.loading-indicator');
-                if (loadingMsg) loadingMsg.remove();
-
-                if (characters.length === 0) {
-                    const noDataMsg = document.createElement('div');
-                    noDataMsg.textContent = this.getText('noCharacterData');
-                    Object.assign(noDataMsg.style, {
-                        color: 'rgba(255, 255, 255, 0.6)', fontSize: '0.75rem',
-                        padding: '0.5rem 0.75rem', textAlign: 'center', fontStyle: 'italic'
-                    });
-                    dropdown.appendChild(noDataMsg);
-                    return;
-                }
-
-                this.renderCharacterButtons(dropdown, characters);
-            } catch (error) {
-                const loadingMsg = dropdown.querySelector('.loading-indicator');
-                if (loadingMsg) loadingMsg.remove();
-
-                const errorMsg = document.createElement('div');
-                errorMsg.textContent = 'Failed to load character data';
-                Object.assign(errorMsg.style, {
-                    color: 'rgba(255, 100, 100, 0.8)', fontSize: '0.75rem',
-                    padding: '0.5rem 0.75rem', textAlign: 'center', fontStyle: 'italic'
-                });
-                dropdown.appendChild(errorMsg);
-            }
-
-            this.setupDropdownCloseHandler(dropdown, avatar);
-        }
-
-        renderCharacterButtons(dropdown, characters) {
-            const buttonStyle = {
-                padding: '0.5rem 0.75rem', backgroundColor: 'rgba(48, 63, 159, 0.2)',
-                color: 'rgba(255, 255, 255, 0.9)', border: '1px solid rgba(255, 255, 255, 0.1)',
-                borderRadius: '0.25rem', fontSize: '0.8125rem', cursor: 'pointer',
-                display: 'block', width: '100%', textDecoration: 'none',
-                marginBottom: '0.25rem', transition: 'all 0.15s ease', textAlign: 'left'
-            };
-
-            const hoverStyle = {
-                backgroundColor: 'rgba(26, 35, 126, 0.4)',
-                borderColor: 'rgba(255, 255, 255, 0.3)'
-            };
-
-            const currentCharacterId = this.getCurrentCharacterId();
-
-            characters.forEach(character => {
-                if (!character) return;
-
-                const isCurrentCharacter = currentCharacterId === character.id.toString();
-                const characterButton = document.createElement('a');
-
-                Object.assign(characterButton.style, buttonStyle);
-
-                if (isCurrentCharacter) {
-                    characterButton.href = 'javascript:void(0)';
-                    characterButton.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        window.PGE.core.handleViewProfile(character.name);
-                        this.closeDropdown();
-                    });
-                } else {
-                    characterButton.href = character.link;
-                }
-
-                const statusText = isCurrentCharacter ? this.getText('current') : this.getText('switch');
-                const statusColor = isCurrentCharacter ? '#2196F3' : '#4CAF50';
-
-                const onlineStatus = character.isOnline ?
-                    `<span style="color: #4CAF50;">●</span> Online` :
-                    `<span style="color: #f44336;">●</span> ${this.getText('lastOnline')}: ${character.lastOnlineText}`;
-
-                characterButton.innerHTML = `
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div style="flex: 1;">
-                        <div style="font-weight: ${isCurrentCharacter ? 'bold' : 'normal'};">
-                            ${character.displayText || character.name || 'Unknown'}
-                        </div>
-                        <div style="font-size: 0.625rem; opacity: 0.6; margin-top: 0.125rem;">
-                            ${onlineStatus}
-                        </div>
-                    </div>
-                    <div style="font-size: 0.6875rem; color: ${statusColor};">
-                        ${statusText}
-                    </div>
-                </div>
-            `;
-
-                if (isCurrentCharacter) {
-                    Object.assign(characterButton.style, {
-                        backgroundColor: 'rgba(33, 150, 243, 0.2)',
-                        borderColor: 'rgba(33, 150, 243, 0.4)'
-                    });
-                }
-
-                if (!isCurrentCharacter) {
-                    characterButton.addEventListener('mouseover', () => Object.assign(characterButton.style, hoverStyle));
-                    characterButton.addEventListener('mouseout', () => Object.assign(characterButton.style, buttonStyle));
-                } else {
-                    // 当前角色的悬停效果（稍微不同的颜色）
-                    characterButton.addEventListener('mouseover', () => {
-                        characterButton.style.backgroundColor = 'rgba(33, 150, 243, 0.3)';
-                        characterButton.style.borderColor = 'rgba(33, 150, 243, 0.6)';
-                    });
-                    characterButton.addEventListener('mouseout', () => {
-                        characterButton.style.backgroundColor = 'rgba(33, 150, 243, 0.2)';
-                        characterButton.style.borderColor = 'rgba(33, 150, 243, 0.4)';
-                    });
-                }
-
-                dropdown.appendChild(characterButton);
-            });
-        }
-
-        setupDropdownCloseHandler(dropdown, avatar) {
-            const closeHandler = (e) => {
-                if (!dropdown.contains(e.target) && !avatar.contains(e.target)) {
-                    this.closeDropdown();
-                    document.removeEventListener('click', closeHandler);
-                }
-            };
-
-            setTimeout(() => {
-                document.addEventListener('click', closeHandler);
-            }, 100);
-        }
-
-        refresh() {
-            try {
-                this.addAvatarClickHandler();
-            } catch (error) {
-                console.log('刷新函数出错:', error);
-            }
-        }
-
-        setupEventListeners() {
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', () => this.refresh());
-            } else {
-                this.refresh();
-            }
-        }
-
-        startObserver() {
-            const config = { attributes: true, childList: true, subtree: true };
-            this.observer = new MutationObserver(() => this.refresh());
-            this.observer.observe(document, config);
         }
     }
 
@@ -7320,9 +6868,6 @@
         setupPageMonitoring().catch(error => {
             console.error('[PGE] Page monitoring setup failed:', error);
         });
-
-        // 3. 初始化角色切换器
-        window.MWIModules.characterSwitcher = new CharacterSwitcher();
 
         console.log('[PGE] Initialization sequence started');
     }
