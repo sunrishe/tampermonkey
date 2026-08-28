@@ -1,0 +1,806 @@
+// ==UserScript==
+// @name         MWI 快速出售助手
+// @namespace    http://tampermonkey.net/
+// @version      0.3.0
+// @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
+// @author       sunrishe
+// @match        https://milkywayidle.com/*
+// @match        https://milkywayidlecn.com/*
+// @match        https://www.milkywayidle.com/*
+// @match        https://www.milkywayidlecn.com/*
+// @noframes
+// @grant        none
+// @run-at       document-idle
+// @license      MIT
+// @homepage     https://github.com/sunrishe/tampermonkey/tree/master/mwi/milkyway-sell
+// @downloadURL  https://raw.githubusercontent.com/sunrishe/tampermonkey/refs/heads/master/mwi/milkyway-sell/milkyway-sell.user.js
+// @updateURL    https://raw.githubusercontent.com/sunrishe/tampermonkey/refs/heads/master/mwi/milkyway-sell/milkyway-sell.user.js
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  // 单例守护：同一页面只允许一个实例（防止正式版/DEV 版等多份脚本重复注入，导致面板多实例混乱）
+  if (window.__MWI_PLCS_GUARD__) return;
+  window.__MWI_PLCS_GUARD__ = true;
+
+  // ============================================================
+  // 工具
+  // ============================================================
+
+  const STORE_KEY = 'mwi-plcs.ignoredItems.v1';
+  // 排除规则：单价超过 50M 的物品、食物（food）、饮料（drink）分类
+  const MAX_UNIT_VALUE = 50_000_000;
+  const EXCLUDE_CATEGORIES = new Set(['/item_categories/food', '/item_categories/drink']);
+
+  function log(...args) {
+    console.log('[MWI-快速出售]', ...args);
+  }
+
+  /** 按 CSS module 前缀找元素（哈希类名随构建变化，前缀是稳定锚点） */
+  function qCls(prefix, root) {
+    root = root || document;
+    return root.querySelector('[class*="' + prefix + '"]');
+  }
+  function waitMs(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+  /** 轮询等待，返回命中值；running=false 时抛「已停止」 */
+  async function waitFor(fn, timeoutMs, intervalMs) {
+    const start = Date.now();
+    intervalMs = intervalMs || 250;
+    while (Date.now() - start < timeoutMs) {
+      if (running === false) throw new Error('已停止');
+      try {
+        const v = fn();
+        if (v) return v;
+      } catch (e) { /* 忽略瞬时错误 */ }
+      await waitMs(intervalMs);
+    }
+    return null;
+  }
+
+  // ---- React 实例访问（实机验证：DOM 元素无 fiber 键，需从 #root 的 fiber 向下走）----
+
+  function rootFiber() {
+    const root = document.querySelector('#root');
+    return (root && root._reactRootContainer && root._reactRootContainer.current) || null;
+  }
+
+  /** 遍历 fiber 树，找具备某特征的小程序 stateNode */
+  function findInst(predicate) {
+    const fiber = rootFiber();
+    if (!fiber) return null;
+    const seen = new Set();
+    let hit = null;
+    const walk = (f) => {
+      if (!f || hit || seen.has(f)) return;
+      seen.add(f);
+      const sn = f.stateNode;
+      if (sn && typeof sn === 'object' && predicate(sn)) hit = sn;
+      if (!hit && f.child) walk(f.child);
+      if (!hit && f.sibling) walk(f.sibling);
+    };
+    walk(fiber);
+    return hit;
+  }
+
+  /** 游戏全局状态（GamePage 实例 state：characterItemMap / itemDetailDict / myMarketListingMap 等） */
+  function getGameState() {
+    const inst = findInst((sn) => sn.state && sn.state.characterItemMap && sn.state.myMarketListingMap);
+    return inst ? inst.state : null;
+  }
+
+  /** 市场面板组件实例（含 marketItems / handleShowNewPostListing / handleHidePostListing） */
+  function getMarketInst() {
+    return findInst((sn) => sn.state && Array.isArray(sn.state.marketItems) && typeof sn.handleShowNewPostListing === 'function');
+  }
+
+  /** 游戏宿主实例（GamePage）：游戏对象自带的导航方法（handleChangeNavTarget / handleGoToMarketplace 等） */
+  function getGameHost() {
+    return findInst((sn) => typeof sn.handleChangeNavTarget === 'function');
+  }
+
+  // ---- 数据读取 ----
+
+  /** 官方市场价值（游戏自己维护在 localStorage，实机验证 872 项） */
+  function marketValue(itemHrid) {
+    try {
+      const lsu = window.localStorageUtil;
+      if (lsu && typeof lsu.getMarketItemValues === 'function') {
+        const { marketItemValues } = lsu.getMarketItemValues() || {};
+        const row = marketItemValues && marketItemValues[itemHrid];
+        const v = row && (row['0'] ?? row[0]);
+        return Number(v) > 0 ? Number(v) : 0;
+      }
+    } catch (e) { /* ignore */ }
+    return 0;
+  }
+
+  /** 本地化物品名（市场面板 marketItems 里的 name 是当前语言） */
+  function localizedName(itemHrid) {
+    const inst = getMarketInst();
+    if (inst) {
+      const m = inst.state.marketItems.find((i) => i.itemHrid === itemHrid);
+      if (m && m.name) return m.name;
+    }
+    const st = getGameState();
+    const d = st && st.itemDetailDict && st.itemDetailDict[itemHrid];
+    return (d && d.name) || itemHrid.split('/').pop() || itemHrid;
+  }
+
+  /** 读取可出售库存：库存位置、0 强化、市场可交易、未屏蔽，按总价值降序 */
+  function readSellableItems() {
+    const st = getGameState();
+    if (!st) return [];
+    // 市场面板的 marketItems 是官方可交易物品清单（不含金币、牛铃袋等）
+    const tradable = new Set((getMarketInst()?.state.marketItems || []).map((m) => m.itemHrid));
+    const ignored = readIgnored();
+    const out = [];
+    for (const stack of st.characterItemMap.values()) {
+      if (!stack || stack.itemLocationHrid !== '/item_locations/inventory') continue;
+      if (Number(stack.enhancementLevel) !== 0) continue;
+      if (Number(stack.count) <= 0) continue;
+      const detail = st.itemDetailDict && st.itemDetailDict[stack.itemHrid];
+      if (!detail) continue;
+      if (EXCLUDE_CATEGORIES.has(detail.categoryHrid)) continue;
+      if (!(tradable.size ? tradable.has(stack.itemHrid) : detail.isTradable)) continue;
+      if (ignored.has(stack.itemHrid)) continue;
+      const value = marketValue(stack.itemHrid);
+      if (value > MAX_UNIT_VALUE) continue;
+      out.push({
+        itemHrid: stack.itemHrid,
+        name: localizedName(stack.itemHrid),
+        count: Number(stack.count),
+        value,
+        total: value * Number(stack.count),
+      });
+    }
+    out.sort((a, b) => b.total - a.total);
+    return out;
+  }
+
+  // ---- 屏蔽清单（localStorage 持久化）----
+
+  function readIgnored() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch (e) {
+      return new Set();
+    }
+  }
+  function addIgnored(itemHrid) {
+    try {
+      const set = readIgnored();
+      set.add(itemHrid);
+      localStorage.setItem(STORE_KEY, JSON.stringify([...set]));
+    } catch (e) { /* ignore */ }
+  }
+  function removeIgnored(itemHrid) {
+    try {
+      const set = readIgnored();
+      set.delete(itemHrid);
+      localStorage.setItem(STORE_KEY, JSON.stringify([...set]));
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---- 图标（游戏 SVG 雪碧图 <use href="...items_sprite.svg#物品id尾段">）----
+
+  let spriteBase = null;
+  function getSpriteBase() {
+    if (spriteBase !== null) return spriteBase;
+    const use = document.querySelector('use[href*="items_sprite"], use[xlink\\:href*="items_sprite"]');
+    if (use) {
+      const href = use.getAttribute('href') || use.getAttribute('xlink:href') || '';
+      const base = href.split('#')[0];
+      if (base) return (spriteBase = base);
+    }
+    spriteBase = '';
+    return spriteBase;
+  }
+  function itemIconSvg(itemHrid, sizeRem) {
+    const base = getSpriteBase();
+    if (!base) return '';
+    const id = (itemHrid.split('/').pop() || '').replace(/[^a-z0-9_]/gi, '');
+    sizeRem = sizeRem || 2;
+    return '<svg style="width:' + sizeRem + 'rem;height:' + sizeRem + 'rem;display:block" viewBox="0 0 32 32" aria-hidden="true">' +
+      '<use href="' + base + '#' + id + '"></use></svg>';
+  }
+
+  // ============================================================
+  // 悬浮面板 UI
+  // ============================================================
+
+  const UI_CSS =
+    /* 尺寸全部用 rem，与游戏对齐：游戏根字号随响应式媒体查询变化（桌面 14.4px / 窄屏 11.2px，1rem 随之缩放），
+       游戏按钮字号 0.8125rem、圆角 0.25rem、小按钮高 1.5rem（实测） */
+    '#mwiPlcsFloating{position:fixed;left:0.75rem;bottom:0.75rem;z-index:999999;font-family:Roboto,Helvetica,Arial,sans-serif;touch-action:none;}' +
+    /* 入口按钮（市场 tab 行末尾，克隆游戏 tab 样式类）：success 金橙底色 + 深字，醒目易识别 */
+    '#mwiPlcsTabEntry{background:#ee9a1d;color:#2a1a00;font-weight:600;cursor:pointer;}' +
+    '#mwiPlcsTabEntry:hover{background:#f5a92e;}' +
+    '#mwiPlcsPanel{display:none;margin-top:0.5rem;width:23.6rem;height:auto;max-height:52vh;overflow:auto;background:#171a22;border:0.0625rem solid #363b48;border-radius:0.625rem;padding:0.625rem;color:#dbe0ea;font-size:0.875rem;box-shadow:0 0.375rem 1.5rem rgba(0,0,0,.5);}' +
+    '#mwiPlcsPanel.open{display:block;}' +
+    /* 标题行：可整体拖动；右侧放操作按钮与最小化 */
+    '#mwiPlcsHeader{display:flex;align-items:center;gap:0.375rem;margin-bottom:0.375rem;cursor:grab;user-select:none;}' +
+    '#mwiPlcsTitle{flex:1;font-size:1rem;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;}' +
+    '.mwiPlcsBtn{display:inline-flex;align-items:center;justify-content:center;padding:0.25rem 0.625rem;margin:0;border:none;border-radius:0.25rem;background:#2b3140;color:#dbe0ea;font-size:0.875rem;font-family:inherit;cursor:pointer;min-height:1.8rem;}' +
+    '.mwiPlcsBtn:hover{background:#39415a;}' +
+    '.mwiPlcsBtn.primary{background:#3d6b4f;color:#fff;}' +
+    '.mwiPlcsBtn.danger{background:#6b3d3d;color:#fff;}' +
+    '.mwiPlcsBtn.small{padding:0.1875rem 0.5rem;font-size:0.8125rem;}' +
+    '#mwiPlcsMin{min-width:1.125rem;}' +
+    /* 已屏蔽列表：直接在标题下方展示，带图标与本地化名称 */
+    '#mwiPlcsIgnoreList{max-height:8rem;overflow:auto;background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;padding:0.25rem 0.375rem;}' +
+    '.mwiPlcsIgnoreHead{font-weight:600;color:#9fb0c8;padding:0.125rem 0 0.25rem;}' +
+    '.mwiPlcsIgnoreRow{display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0.125rem;border-bottom:0.0625rem solid #262b37;}' +
+    '.mwiPlcsIgnoreRow:last-child{border-bottom:none;}' +
+    '.mwiPlcsIgnoreName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+    '#mwiPlcsQueue{max-height:9.5rem;overflow:auto;}' +
+    /* 进度行：左右布局——左=进度（当前/总数+百分比），右=已屏蔽物品数 */
+    '#mwiPlcsProgress{margin-top:0.375rem;padding:0.25rem 0.375rem;background:#1a2430;border:0.0625rem solid #2c4155;border-radius:0.25rem;justify-content:space-between;align-items:center;gap:0.5rem;}' +
+    '#mwiPlcsProgress .pl{color:#cfe3f5;font-weight:600;}' +
+    '#mwiPlcsProgress .pr{color:#9fb0c8;font-weight:400;font-size:0.8125rem;white-space:nowrap;}' +
+    /* 队列条目：单行展示——图标 + 名称 + ×数量 + 总价值挤在一行，整条固定行高，内容再多也不变高 */
+    '.mwiPlcsItem{padding:0.1875rem 0.375rem;margin:0.125rem 0;background:#1e2230;border:0.0625rem solid #2c3142;border-radius:0.25rem;display:flex;align-items:center;gap:0.5rem;min-width:0;height:1.6rem;box-sizing:border-box;}' +
+    '.mwiPlcsItem.current{border-color:#4a7a5c;}' +
+    '.mwiPlcsItem svg{flex:0 0 auto;display:block;}' +
+    '.mwiPlcsItem .name{flex:1;min-width:0;font-weight:600;color:#eef;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+    '.mwiPlcsItem .qty{color:#9fb0c8;font-size:0.8125rem;white-space:nowrap;}' +
+    '.mwiPlcsItem .total{color:#cfe3f5;font-weight:600;font-size:0.8125rem;white-space:nowrap;text-align:right;}' +
+    /* 移动端适配：窄屏时面板宽度适配视口、高度降低，避免大面积遮挡市场内容区 */
+    '@media (max-width:45rem){' +
+    '#mwiPlcsFloating{left:0.375rem;bottom:0.375rem;}' +
+    '#mwiPlcsPanel{width:min(23.6rem,calc(100vw - 0.75rem));max-height:44vh;font-size:0.8125rem;z-index:999999;}' +
+    '.mwiPlcsItem .qty,.mwiPlcsItem .total{font-size:0.75rem;}' +
+    '}';
+
+  function buildPanel() {
+    try {
+      const host = document.createElement('div');
+      host.id = 'mwiPlcsFloating';
+      floatHost = host; // 尽早登记，避免后续异常导致 watchdog 拿不到宿主
+      host.innerHTML =
+      '<style>' + UI_CSS + '</style>' +
+      '<div id="mwiPlcsPanel">' +
+      '  <div id="mwiPlcsHeader">' +
+      '    <span id="mwiPlcsTitle">MWI 快速出售</span>' +
+      '    <button class="mwiPlcsBtn danger" id="mwiPlcsStop" style="display:none"><svg width="0.85em" height="0.85em" viewBox="0 0 16 16" aria-hidden="true" style="display:inline-block;vertical-align:-0.08em;margin-right:0.25rem"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" fill="currentColor"/></svg>停止</button>' +
+      '    <button class="mwiPlcsBtn primary" id="mwiPlcsStart">▶ 开始</button>' +
+      '    <button class="mwiPlcsBtn" id="mwiPlcsMin" title="最小化">—</button>' +
+      '  </div>' +
+      '  <div id="mwiPlcsIgnoreList"></div>' +
+      '  <div id="mwiPlcsProgress" style="display:none"><span class="pl" id="mwiPlcsProgressText"></span><span class="pr" id="mwiPlcsProgressIgnored"></span></div>' +
+      '  <div id="mwiPlcsQueue"></div>' +
+      '</div>';
+    document.body.appendChild(host);
+
+    // 「—」最小化 → 收起面板、还原 tab 入口按钮（openPanel/closePanel 在模块作用域，
+    // 点击展开逻辑挂在市场 tab 行末尾的入口按钮上，见 injectTabEntry）
+    host.querySelector('#mwiPlcsMin').addEventListener('click', closePanel);
+
+    // 窗口尺寸变化（resize / 移动端旋转）时把宿主钳制回可视区，
+    // 否则 fixed 定位坐标不变，窗口变小后面板会跑出可视区
+    window.addEventListener('resize', clampFloatHost);
+    window.addEventListener('orientationchange', clampFloatHost);
+
+    // 拖动：面板标题行支持（点击行内按钮不触发）。
+    // 关键1：拖动开始先把 bottom 置为 auto，避免 fixed 元素同时 top+bottom 被拉伸变形；
+    // 关键2：点击语义在 pointerup 里直接判定（位移 < 阈值 = 点击，不依赖浏览器合成的 click，
+    //        避免手抖被误判为拖动导致面板打不开）；真拖动后吞掉随后的原生 click；
+    // 关键3：拖动过程跟手但**不允许超出可视区**——移动目标钳制在 [0, 视口-面板尺寸] 内
+    const DRAG_THRESHOLD = 8;
+    let dragSuppress = false;
+    const bindDrag = (el, onTap) => {
+      let dragState = null;
+      el.addEventListener('pointerdown', (e) => {
+        if (e.target !== el && e.target.closest('button')) return;
+        dragState = { x: e.clientX, y: e.clientY, left: host.offsetLeft, top: host.offsetTop, moved: false };
+        host.style.bottom = 'auto';
+        try { el.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        e.preventDefault();
+      });
+      el.addEventListener('pointermove', (e) => {
+        if (!dragState) return;
+        const dx = e.clientX - dragState.x;
+        const dy = e.clientY - dragState.y;
+        if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) dragState.moved = true;
+        // 跟手但钳制在可视区内：不允许拖出视口
+        const maxX = Math.max(0, window.innerWidth - host.offsetWidth);
+        const maxY = Math.max(0, window.innerHeight - host.offsetHeight);
+        host.style.left = Math.min(Math.max(0, dragState.left + dx), maxX) + 'px';
+        host.style.top = Math.min(Math.max(0, dragState.top + dy), maxY) + 'px';
+      });
+      const endDrag = () => {
+        if (dragState) {
+          if (!dragState.moved && onTap) onTap(); // 无位移 = 点击
+          else if (dragState.moved) dragSuppress = true; // 真拖动 → 吞掉随后的原生 click
+        }
+        dragState = null;
+        clampFloatHost(); // 保险：再钳一次
+        setTimeout(() => { dragSuppress = false; }, 0);
+      };
+      el.addEventListener('pointerup', endDrag);
+      el.addEventListener('pointercancel', endDrag);
+      el.addEventListener('click', (e) => {
+        if (dragSuppress) { e.preventDefault(); e.stopPropagation(); dragSuppress = false; }
+      });
+    };
+    bindDrag(host.querySelector('#mwiPlcsHeader'), null);
+
+    host.querySelector('#mwiPlcsStart').addEventListener('click', () => { startBatch(); });
+    host.querySelector('#mwiPlcsStop').addEventListener('click', () => { running = false; clearHint(); clearBatchUI(); });
+    watchDisconnect();
+    } catch (e) {
+      log('面板构建失败：' + (e && e.message));
+    }
+  }
+
+  // ---- 掉线处理：不在游戏主页面（isFullDisconnected）时卸载组件，重新进入后自动重建 ----
+  let floatHost = null;
+  let watchdogTimer = null;
+
+  /** 市场 tab 行末尾的入口按钮（由 injectTabEntry 注入到游戏 tab 栏） */
+  function tabEntry() {
+    return document.querySelector('#mwiPlcsTabEntry');
+  }
+  /** 展开面板：刷新忽略列表，并把宿主钳回可视区（防止拖动过后面板部分不可见）；入口按钮保持可见 */
+  function openPanel() {
+    const panel = document.querySelector('#mwiPlcsPanel');
+    if (!panel) return;
+    panel.classList.add('open');
+    renderIgnoreList();
+    if (!floatHost) return;
+    const pr = panel.getBoundingClientRect();
+    const hostH = floatHost.offsetHeight;
+    if (pr.top < 0) floatHost.style.top = '0px';
+    else if (pr.bottom > window.innerHeight) floatHost.style.top = Math.max(0, window.innerHeight - hostH) + 'px';
+  }
+  /** 收起面板：「—」最小化收起（入口按钮常驻可见） */
+  function closePanel() {
+    const panel = document.querySelector('#mwiPlcsPanel');
+    if (panel) panel.classList.remove('open');
+  }
+
+  /**
+   * 把入口按钮注入市场面板第一行 tab（视图 tab：商品列表/我的挂牌）末尾。
+   * 克隆未选中 tab 的完整样式类（排除 Mui-selected）保证与原生 tab 同规格；
+   * 主题覆盖为游戏 success 金橙底色，保持"醒目入口"的辨识度。
+   * 游戏切页面/面板重挂载会丢掉该节点，由 watchdog 每 1.5s 补注入。
+   */
+  function injectTabEntry() {
+    if (tabEntry()) return;
+    const mp = qCls('MarketplacePanel_marketplacePanel');
+    if (!mp) return;
+    // 视图 tab 行（商品列表/我的挂牌）是面板内第一个 MuiTabs，tab 数少；分类行（资源/消耗品…）tab 数多
+    const flex = Array.from(mp.querySelectorAll('[class*="MuiTabs-flexContainer"]'))
+      .find((f) => f.querySelectorAll('[class*="MuiTab-root"]').length < 5) ||
+      mp.querySelector('[class*="MuiTabs-flexContainer"]');
+    if (!flex) return;
+    const ref = Array.from(flex.querySelectorAll('[class*="MuiTab-root"]'))
+      .find((t) => !/\bMui-selected\b/.test(t.className)) ||
+      flex.querySelector('[class*="MuiTab-root"]');
+    if (!ref) return;
+    const entry = document.createElement('button');
+    entry.type = 'button';
+    entry.id = 'mwiPlcsTabEntry';
+    entry.className = ref.className.split(' ').filter((c) => !/Mui-selected/.test(c)).join(' ');
+    entry.setAttribute('role', 'tab');
+    entry.textContent = '🐄 批量出售';
+    flex.appendChild(entry);
+    entry.addEventListener('click', openPanel);
+  }
+
+  function clampFloatHost() {
+    if (!floatHost) return;
+    const r = floatHost.getBoundingClientRect();
+    const maxX = Math.max(0, window.innerWidth - r.width);
+    const maxY = Math.max(0, window.innerHeight - r.height);
+    const x = Math.min(Math.max(0, r.left), maxX);
+    const y = Math.min(Math.max(0, r.top), maxY);
+    if (x !== r.left) floatHost.style.left = x + 'px';
+    if (y !== r.top) floatHost.style.top = y + 'px';
+  }
+  function unloadComponent() {
+    if (!floatHost) return;
+    running = false; // 掉线时停止批量
+    if (floatHost.parentNode) floatHost.parentNode.removeChild(floatHost);
+    window.removeEventListener('resize', clampFloatHost);
+    window.removeEventListener('orientationchange', clampFloatHost);
+    floatHost = null;
+    // 市场 tab 里的入口按钮一并移除（重新进入市场后由 watchdog 重新注入）
+    const entry = tabEntry();
+    if (entry && entry.parentNode) entry.parentNode.removeChild(entry);
+    // 注意：不清除 watchdog——它需要继续监听重连，重新进入游戏后自动重建组件
+  }
+  function watchDisconnect() {
+    if (watchdogTimer) return;
+    watchdogTimer = setInterval(() => {
+      const st = getGameState();
+      const disconnected = !!(st && st.isFullDisconnected);
+      window.__PLCS_WATCH__ = { floatHost: !!floatHost, timer: !!watchdogTimer, disconnected: disconnected ? 1 : 0 };
+      if (disconnected && floatHost) {
+        unloadComponent();
+      } else if (!disconnected && st && !floatHost) {
+        buildPanel(); // 重新进入游戏 → 重新挂载
+      } else if (!disconnected && floatHost) {
+        injectTabEntry(); // 市场 tab 行出现/重挂载时补注入入口按钮
+      }
+    }, 1500);
+  }
+
+  /** 停止/结束后清空进度与队列、弹窗提示行，还原入口文本 */
+  function clearBatchUI() {
+    const q = document.querySelector('#mwiPlcsQueue');
+    const p = document.querySelector('#mwiPlcsProgress');
+    const t = tabEntry();
+    clearHint();
+    if (q) q.innerHTML = '';
+    if (p) p.style.display = 'none';
+    if (t && t.textContent !== '🐄 批量出售') t.textContent = '🐄 批量出售';
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  function fmt(n) {
+    n = Number(n) || 0;
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+  }
+  let lastLog = '';
+  /** 提示信息：写入出售弹窗底部的提示行（由 injectSellHint 注入） */
+  function setLog(msg) {
+    lastLog = msg;
+    const el = document.querySelector('#mwiPlcsLog');
+    if (el) el.textContent = msg;
+    log(msg);
+  }
+  /** 清空弹窗提示行（停止/结束后调用，面板上不保留提示） */
+  function clearHint() {
+    lastLog = '';
+    const el = document.querySelector('#mwiPlcsLog');
+    if (el) el.textContent = '';
+  }
+  /** 出售弹窗打开时，在弹窗底部注入提示信息行（显示最近一条日志；弹窗关闭后随游戏卸载） */
+  function injectSellHint() {
+    const modal = qCls('MarketplacePanel_modalContent');
+    if (!modal || modal.querySelector('#mwiPlcsLog')) return;
+    const hint = document.createElement('div');
+    hint.id = 'mwiPlcsLog';
+    // 弹窗是 flex 内容驱动宽度，max-width:100% 会和容器宽度循环依赖导致长文本把弹窗撑宽；
+    // 因此注入时读取弹窗当前宽度，写死像素级 max-width —— 内容超宽自动换行、行高自适应
+    const modalW = modal.getBoundingClientRect().width;
+    hint.style.cssText = 'margin:0.375rem auto 0;max-width:' + Math.max(160, Math.round(modalW)) + 'px;width:100%;box-sizing:border-box;text-align:center;color:#9fb0c8;font-size:0.75rem;line-height:1.35;word-break:break-all;background:#10131a;border:0.0625rem solid #2a2f3b;border-radius:0.25rem;padding:0.25rem 0.375rem;';
+    hint.textContent = lastLog;
+    modal.appendChild(hint);
+  }
+  /**
+   * 用 MutationObserver 实时监听出售弹窗渲染完成（modalContent + 发布按钮容器均就绪）即触发 cb，
+   * 取代固定 waitMs 等待——弹窗一出现就立即注入忽略按钮与提示，不再空等。带超时回退，避免极端情况下卡死。
+   * cb 保证只执行一次；root 优先挂市场面板子树，缺失时退到 document.body。
+   */
+  function whenSellModalReady(cb, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const fire = () => { if (done) return; done = true; try { cb(); } finally { resolve(); } };
+      const root = qCls('MarketplacePanel_marketplacePanel') || document.body;
+      const ready = () =>
+        qCls('MarketplacePanel_modalContent', root) && qCls('MarketplacePanel_postButtonContainer', root);
+      if (ready()) { fire(); return; }
+      let obs = null;
+      try {
+        obs = new MutationObserver(() => {
+          if (ready()) { if (obs) obs.disconnect(); fire(); }
+        });
+        obs.observe(root, { childList: true, subtree: true });
+      } catch (e) { /* 监听建立失败直接回退到超时 */ }
+      setTimeout(() => { if (obs) obs.disconnect(); fire(); }, timeoutMs || 3000);
+    });
+  }
+  function renderQueue(items, idx) {
+    const el = document.querySelector('#mwiPlcsQueue');
+    if (!el) return;
+    renderProgress(idx, items.length);
+    // 只展示当前项与下一项（共 2 条）
+    const show = items.slice(idx, idx + 2);
+    if (!show.length) { el.innerHTML = ''; return; }
+    // 单行条目：图标 + 名称 + ×数量 + 总价值 挤在一行
+    el.innerHTML = show.map((it, k) =>
+      '<div class="mwiPlcsItem' + (k === 0 ? ' current' : '') + '">' +
+      itemIconSvg(it.itemHrid, 1.3) +
+      '<span class="name">' + esc(it.name) + '</span>' +
+      '<span class="qty">×' + fmt(it.count) + '</span>' +
+      '<span class="total">' + fmt(it.total) + '</span></div>').join('');
+  }
+
+  /** 总进度行：左=进度（当前/总数+百分比），右=已屏蔽物品数；并同步到 tab 入口按钮的文本 */
+  function renderProgress(idx, total) {
+    const el = document.querySelector('#mwiPlcsProgress');
+    const t = tabEntry();
+    if (!el) return;
+    if (!total) {
+      el.style.display = 'none';
+      if (t && t.textContent !== '🐄 批量出售') t.textContent = '🐄 批量出售';
+      return;
+    }
+    el.style.display = 'flex';
+    const n = Math.min(idx + 1, total);
+    const pct = total ? Math.round((n / total) * 100) : 0;
+    const left = el.querySelector('.pl');
+    const right = el.querySelector('.pr');
+    if (left) left.textContent = '进度：' + n + ' / ' + total + '（' + pct + '%）';
+    if (right) right.textContent = '已屏蔽 ' + readIgnored().size;
+    if (t) t.textContent = '🐄 批量出售 (' + n + '/' + total + ')';
+  }
+  /** 已屏蔽列表：面板内直接展示（图标 + 本地化名称 + 解锁） */
+  function renderIgnoreList() {
+    const listEl = document.querySelector('#mwiPlcsIgnoreList');
+    if (!listEl) return;
+    const set = readIgnored();
+    if (!set.size) {
+      listEl.innerHTML = '<div class="mwiPlcsIgnoreHead">已屏蔽物品 (0) —— 出售弹窗里点「忽略该物品」可添加</div>';
+      return;
+    }
+    const rows = [...set].map((hrid) =>
+      '<div class="mwiPlcsIgnoreRow">' + itemIconSvg(hrid, 1.4) +
+      '<span class="mwiPlcsIgnoreName" title="' + esc(hrid) + '">' + esc(localizedName(hrid)) + '</span>' +
+      '<button class="mwiPlcsBtn small" data-unignore="' + esc(hrid) + '">解锁</button></div>').join('');
+    listEl.innerHTML = '<div class="mwiPlcsIgnoreHead">已屏蔽物品 (' + set.size + ')</div>' + rows;
+    listEl.querySelectorAll('[data-unignore]').forEach((b) => {
+      b.addEventListener('click', () => { removeIgnored(b.dataset.unignore); renderIgnoreList(); setLog('已解锁，下次批量将重新包含该物品'); });
+    });
+  }
+
+  // ============================================================
+  // 批量出售流程
+  // ============================================================
+
+  let running = false;
+
+  /** 让市场面板可见。
+   * 使用游戏宿主的直接导航方法 handleChangeNavTarget('marketplace')（与点导航按钮等价）；
+   * 不要用 handleGoToMarketplace（它走弹窗直通模式，会挂在不显示的侧栏里导致"卡住"），
+   * 也不要模拟点击导航（菜单折叠时点不到）。 */
+  async function ensureMarketOpen() {
+    const visible = () => {
+      const el = qCls('MarketplacePanel_marketplacePanel');
+      return !!el && el.getClientRects().length > 0;
+    };
+    if (visible()) return true;
+    const host = getGameHost();
+    if (!host || typeof host.handleChangeNavTarget !== 'function') return false;
+    host.handleChangeNavTarget('marketplace');
+    return !!(await waitFor(visible, 5000));
+  }
+
+  /**
+   * 挂单额度检查：挂单满 → 切「我的挂牌」等用户收集
+   * 收集出空位 → true；超时仍满 → false（结束批量）
+   */
+  async function ensureListingSlots() {
+    const st = getGameState();
+    if (!st) return false;
+    const cap = Number(st.characterInfo && st.characterInfo.marketListingCap) || 0;
+    const used = st.myMarketListingMap ? st.myMarketListingMap.size : 0;
+    if (used < cap) return true;
+
+    setLog('挂牌已满 (' + used + '/' + cap + ')，已切到「我的挂牌」，请收集已完成/到期的挂单…');
+    const panel = qCls('MarketplacePanel_marketplacePanel');
+    if (panel) {
+      const tab = Array.from(panel.querySelectorAll('button')).find((b) => /我的挂牌|my listings/i.test(b.textContent || ''));
+      if (tab) tab.click();
+    }
+    const deadline = Date.now() + 3 * 60 * 1000;
+    while (Date.now() < deadline) {
+      if (running === false) throw new Error('已停止');
+      const s2 = getGameState();
+      const used2 = s2 && s2.myMarketListingMap ? s2.myMarketListingMap.size : 0;
+      if (used2 < cap) {
+        setLog('已收集出可用挂牌位 (' + used2 + '/' + cap + ')，继续批量出售');
+        return true;
+      }
+      await waitMs(2500);
+    }
+    setLog('❌ 等待收集超时，挂牌位仍满（' + used + '/' + cap + '），批量出售结束，可在「我的挂牌」收集后重试');
+    return false;
+  }
+
+  /**
+   * 单个物品：用游戏宿主导航直达该物品的市场视图（PGE 同款调用 handleGoToMarketplace(itemHrid, level)）
+   * → 等摘要出现「+ 新出售挂牌」→ 开弹窗 → 填最佳报价/最大数量
+   */
+  async function setupItemForm(item) {
+    const panel = qCls('MarketplacePanel_marketplacePanel');
+    if (!panel) throw new Error('市场面板不可用');
+
+    // 1. 宿主导航到该物品（内部会发起订单簿请求；空参调用会卡在"正在加载"，
+    //    必须带 itemHrid 和强化等级 0）
+    const host = getGameHost();
+    if (!host || typeof host.handleGoToMarketplace !== 'function') throw new Error('无法获取游戏宿主导航方法');
+    host.handleGoToMarketplace(item.itemHrid, 0);
+
+    // 2. 等物品摘要视图加载出「+ 新出售挂牌」（需订单簿 WS 数据，慢时点一次刷新）
+    let sellBtn = null;
+    const findSellBtn = () => {
+      const b = panel.querySelector('[class*="newSellListingButton"]');
+      if (b) return b;
+      return Array.from(panel.querySelectorAll('button')).find((x) => /新出售挂牌|new sell listing/i.test(x.textContent || ''));
+    };
+    sellBtn = await waitFor(findSellBtn, 15000);
+    if (!sellBtn) {
+      const refresh = Array.from(panel.querySelectorAll('button')).find((b) => /^刷新$|^Refresh$/.test(b.textContent.trim()));
+      if (refresh) { refresh.click(); setLog('订单簿加载慢，已点「刷新」，继续等待…'); }
+      sellBtn = await waitFor(findSellBtn, 15000);
+      if (!sellBtn) throw new Error('「+ 新出售挂牌」按钮超时未出现');
+    }
+
+    // 3. 点击「+ 新出售挂牌」打开弹窗
+    sellBtn.click();
+    if (!(await waitFor(() => qCls('MarketplacePanel_modalContent', panel), 8000))) {
+      throw new Error('出售弹窗未打开');
+    }
+    // 用 MutationObserver 监听弹窗（modalContent + 发布按钮容器）就绪即注入忽略按钮与提示，避免空等
+    await whenSellModalReady(() => {
+      injectIgnoreButton();
+      // 弹窗打开即展示正确提示：等待用户确认价格/数量后发布
+      setLog('等待确认：检查价格/数量后点「发布出售挂牌」，或点「忽略该物品」/关闭弹窗完成本项');
+      injectSellHint();
+    });
+
+    // 4. 点「最佳出售报价」（实机验证：点击后价格立即生效）
+    const best = panel.querySelector('[class*="MarketplacePanel_bestPrice"]');
+    if (best) {
+      const t = (best.textContent || '').trim();
+      if (t && !/N\/A|n\/a/i.test(t)) {
+        best.click();
+        await waitMs(300);
+      } else {
+        setLog('暂无最佳出售报价，保持默认价格，请留意');
+      }
+    }
+
+    // 5. 点「最多」填满数量
+    const maxBtn = Array.from(panel.querySelectorAll('button')).find((b) => /^最多$|^Max$|^All$/.test(b.textContent.trim()));
+    if (maxBtn) {
+      maxBtn.click();
+      await waitMs(300);
+    }
+    return true;
+  }
+
+  /** 出售弹窗内：把「忽略该物品」放在发布按钮的左侧（两者并排一行；容器本身是块级布局，需包一层横向 flex 行）。
+   * 尺寸与发布按钮一致（克隆其 CSS 类）；颜色从游戏源码/页面取主色变体（Button_primary 蓝紫，"升级容量/链接"按钮同款），
+   * 避免与"发布出售挂牌"（success 金色）视觉混淆 */
+  function injectIgnoreButton() {
+    const cont = qCls('MarketplacePanel_postButtonContainer');
+    if (!cont || cont.querySelector('.mwiPlcsIgnoreBtn')) return;
+    const sellBtn = cont.querySelector('button');
+    if (!sellBtn) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    let cls = typeof sellBtn.className === 'string' ? sellBtn.className : '';
+    // 用游戏 primary 变体替换 success 变体（颜色来自游戏自身按钮体系）；
+    // primary 取不到时回退 warning（取消）色，保证与发布按钮（success 金）颜色始终不同
+    let pCls = null;
+    const primaryEl = document.querySelector('[class*="Button_primary"]');
+    if (primaryEl && typeof primaryEl.className === 'string') {
+      pCls = primaryEl.className.split(' ').find((c) => /Button_primary/.test(c)) || null;
+    }
+    if (!pCls) {
+      const warnEl = document.querySelector('[class*="Button_warning"]');
+      if (warnEl && typeof warnEl.className === 'string') {
+        pCls = warnEl.className.split(' ').find((c) => /Button_warning/.test(c)) || null;
+      }
+    }
+    if (pCls && typeof cls === 'string') {
+      cls = cls.split(' ').map((c) => (/success/i.test(c) ? pCls : c)).join(' ');
+    }
+    btn.className = ('mwiPlcsIgnoreBtn ' + cls).trim();
+    btn.textContent = '忽略该物品';
+    // 行容器：忽略按钮在左、发布按钮在右（间距用 rem，与游戏字号体系一致）
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:center;gap:0.375rem;';
+    sellBtn.parentNode.insertBefore(row, sellBtn);
+    row.appendChild(btn);
+    row.appendChild(sellBtn);
+    btn.addEventListener('click', () => {
+      const inst = getMarketInst();
+      const itemHrid = inst && inst.state && inst.state.itemHrid;
+      if (!itemHrid) { setLog('忽略失败：未识别当前物品'); return; }
+      addIgnored(itemHrid);
+      setLog('已屏蔽「' + itemHrid.split('/').pop() + '」，本次跳过；可在面板「已屏蔽」中解锁');
+      renderIgnoreList();
+      if (inst && typeof inst.handleHidePostListing === 'function') inst.handleHidePostListing();
+    });
+  }
+
+  /** 等待用户完成出售（弹窗关闭即下一步） */
+  async function waitForModalClose() {
+    const panel = qCls('MarketplacePanel_marketplacePanel');
+    if (!panel) return;
+    const start = Date.now();
+    while (Date.now() - start < 30 * 60 * 1000) {
+      if (running === false) throw new Error('已停止');
+      if (!qCls('MarketplacePanel_modalContent', panel)) return;
+      await waitMs(300);
+    }
+  }
+
+  /** 主流程 */
+  async function startBatch() {
+    if (running) return;
+    running = true;
+    const stopBtn = document.querySelector('#mwiPlcsStop');
+    const startBtn = document.querySelector('#mwiPlcsStart');
+    if (stopBtn) stopBtn.style.display = 'inline-block';
+    if (startBtn) startBtn.style.display = 'none';
+    // 出售中：面板自动吸附回左下角（无论此前拖到哪），高度由内容决定（CSS height:auto + max-height 上限）
+    if (floatHost) {
+      const rootFs = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      const gap = (window.innerWidth <= 45 * rootFs ? 0.375 : 0.75) * rootFs;
+      floatHost.style.left = gap + 'px';
+      floatHost.style.top = 'auto';
+      floatHost.style.bottom = gap + 'px';
+    }
+    // 开始出售时不展示已屏蔽列表（停止后恢复）
+    const ignoreList = document.querySelector('#mwiPlcsIgnoreList');
+    if (ignoreList) ignoreList.style.display = 'none';
+
+    try {
+      if (!(await ensureMarketOpen())) throw new Error('无法打开市场面板');
+      // 市场面板打开后再读库存，确保可交易清单（marketItems）已就绪
+      const items = readSellableItems();
+      if (!items.length) {
+        setLog('没有可出售的库存物品（已排除不可交易 / 强化>0 / 单价超 50M / 食物饮料 / 已屏蔽）');
+        return;
+      }
+      setLog('共 ' + items.length + ' 个物品可出售，按总价值从高到低开始…');
+
+      if (!(await ensureListingSlots())) return;
+
+      for (let i = 0; i < items.length && running; i++) {
+        const item = items[i];
+        renderQueue(items, i);
+        try {
+          await setupItemForm(item);
+          await waitForModalClose();
+        } catch (e) {
+          if (e.message === '已停止') break;
+          setLog('⚠️ 处理失败：' + e.message + '（已跳过）');
+          try { closeModal(); } catch (err) { /* ignore */ }
+          await waitMs(1200);
+        }
+        if (running && !(await ensureListingSlots())) break;
+      }
+      if (running) setLog('✅ 批量出售完成');
+    } catch (e) {
+      if (e.message !== '已停止') setLog('❌ 批量出售中止：' + e.message);
+    } finally {
+      running = false;
+      if (stopBtn) stopBtn.style.display = 'none';
+      if (startBtn) startBtn.style.display = 'inline-block';
+      // 停止/结束后清空进度与队列，恢复已屏蔽列表
+      clearBatchUI();
+      if (ignoreList) { ignoreList.style.display = ''; renderIgnoreList(); }
+    }
+  }
+
+  function closeModal() {
+    const inst = getMarketInst();
+    if (inst && typeof inst.handleHidePostListing === 'function') inst.handleHidePostListing();
+  }
+
+  // ============================================================
+  // 启动：等游戏主界面就绪后挂面板
+  // ============================================================
+
+  const bootTimer = setInterval(() => {
+    if (document.querySelector('#root') && rootFiber() && getGameState()) {
+      clearInterval(bootTimer);
+      buildPanel();
+    }
+  }, 800);
+})();
