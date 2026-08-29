@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.5.1
+// @version      0.6.0
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -34,7 +34,8 @@
   const SELL_OPTION_DEFAULT = 'default';
   const SELL_OPTION_BEST_ASK = 'bestAsk';
   const SELL_OPTION_BEST_BID = 'bestBid';
-  // 默认排除规则：食物（food）、饮料（drink）分类；单价超过 50M；总价低于 1M（均以 M 为单位配置，需勾选启用；总价默认不勾选）
+  // 默认排除规则：食物（food）、饮料（drink）分类；单价超过 50M；总价低于 1M（均以 M 为单位配置，需勾选启用；总价默认不勾选）；
+  // 右一价扣税后低于商人价不出售（默认开启，保护性规则）
   const DEFAULT_SETTINGS = {
     sellOption: SELL_OPTION_DEFAULT,
     excludeFood: true,
@@ -43,6 +44,7 @@
     maxUnitValue: 50, // 单位 M
     enableMinTotalValue: false,
     minTotalValue: 1, // 单位 M
+    skipBelowVendor: true,
   };
 
   function log(...args) {
@@ -143,6 +145,7 @@
 
   /**
    * 读订单簿一级（左一/右一）：marketItemOrderBooks.orderBooks[等级].asks/bids[0] = {price, quantity}。
+   * 数量为该价格档位所有挂单的数量总和（同价聚合），非首位单档数量。
    * 返回 { ask, bid }，缺失时为 null（与游戏 getBestAskPrice/getBestBidPrice 同源）。
    */
   function readOrderBookLevel0(inst) {
@@ -152,7 +155,32 @@
     if (!ob || !ob.orderBooks || ob.itemHrid !== inst.state.itemHrid) return { ask: null, bid: null };
     const lv = String(inst.state.enhancementLevel || inst.state.enhancementLevelInput || 0);
     const book = ob.orderBooks[lv];
-    return { ask: (book && book.asks && book.asks[0]) || null, bid: (book && book.bids && book.bids[0]) || null };
+    if (!book) return { ask: null, bid: null };
+    // 同价聚合：统计与首位同价的所有挂单数量之和
+    const sumQtyAt = (rows, price) => {
+      let sum = 0;
+      for (const r of rows || []) {
+        if (r && r.price === price) sum += Number(r.quantity) || 0;
+      }
+      return sum;
+    };
+    const ask0 = (book.asks && book.asks[0]) || null;
+    const bid0 = (book.bids && book.bids[0]) || null;
+    return {
+      ask: ask0 ? { price: ask0.price, quantity: sumQtyAt(book.asks, ask0.price) } : null,
+      bid: bid0 ? { price: bid0.price, quantity: sumQtyAt(book.bids, bid0.price) } : null,
+    };
+  }
+
+  /** 市场税率：牛铃袋 18%，其余 5%（源码常量 TAX_RATE/COWBELL_TAX_RATE） */
+  function taxRateOf(itemHrid) {
+    return itemHrid === '/items/bag_of_10_cowbells' ? 0.18 : 0.05;
+  }
+  /** 商人价（商店售价）：itemDetailDict[itemHrid].sellPrice */
+  function vendorPriceOf(itemHrid) {
+    const st = getGameState();
+    const d = st && st.itemDetailDict && st.itemDetailDict[itemHrid];
+    return d ? Number(d.sellPrice) || 0 : 0;
   }
 
   /** 读取可出售库存：库存位置、0 强化、市场可交易、未屏蔽、未超单价上限、未低于总价下限，按总价值降序 */
@@ -314,12 +342,20 @@
     '.mwiPlcsCfgRow .suffix{color:#9fb0c8;font-size:0.8125rem;white-space:nowrap;}' +
     '#mwiPlcsCfgReset{width:100%;margin-top:0.5rem;}' +
     /* 已屏蔽列表：直接在标题下方展示，带图标与本地化名称 */
-    '#mwiPlcsIgnoreList{max-height:8rem;overflow:auto;background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;padding:0.25rem 0.375rem;}' +
+    '#mwiPlcsIgnoreList{max-height:14rem;overflow:auto;background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;padding:0.25rem 0.375rem;}' +
     '.mwiPlcsIgnoreHead{font-weight:600;color:#9fb0c8;padding:0.125rem 0 0.25rem;}' +
     '.mwiPlcsIgnoreRow{display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0.125rem;border-bottom:0.0625rem solid #262b37;}' +
     '.mwiPlcsIgnoreRow:last-child{border-bottom:none;}' +
     '.mwiPlcsIgnoreName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
     '#mwiPlcsQueue{max-height:9.5rem;overflow:auto;}' +
+    /* 左一/右一可点击价格：下划线链接样式，hover 高亮 */
+    '#mwiPlcsOrderLine a{color:#7fb3e8;text-decoration:underline;cursor:pointer;}' +
+    '#mwiPlcsOrderLine a:hover{color:#a9d4ff;}' +
+    /* 左一/右一整体（标签+价格）可点击下划线；左一暖橙、右一绿色区分；数量无下划线不参与点击 */
+    '#mwiPlcsOrderLine .ob{cursor:pointer;text-decoration:underline;}' +
+    '#mwiPlcsOrderLine .ob.ask{color:#e8a33d;}' +
+    '#mwiPlcsOrderLine .ob.bid{color:#5fd38a;}' +
+    '#mwiPlcsOrderLine .ob .qtyc{color:#9fb0c8;text-decoration:none;cursor:default;}' +
     /* 进度行：左右布局——左=进度（当前/总数+百分比），右=已屏蔽物品数 */
     '#mwiPlcsProgress{margin-top:0.375rem;padding:0.25rem 0.375rem;background:#1a2430;border:0.0625rem solid #2c4155;border-radius:0.25rem;justify-content:space-between;align-items:center;gap:0.5rem;}' +
     '#mwiPlcsProgress .pl{color:#cfe3f5;font-weight:600;}' +
@@ -546,6 +582,24 @@
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
     return String(n);
   }
+  /**
+   * 游戏 formatShorten 同款：K/M/B/T 缩写，向下取整（非四舍五入），10-99 区间保留一位小数。
+   * 与订单簿表格价格列显示完全一致（实机验证：6140000→6140K、1175000→1175K）。
+   */
+  function fmtShorten(n) {
+    n = Number(n) || 0;
+    const abs = Math.abs(n);
+    const K = 1000, M = 1e6, B = 1e9, T = 1e12;
+    let s = n, suffix = '';
+    const rounded = Math.round(abs);
+    if (rounded < 100 * K) s = n;
+    else if (rounded < 10 * M) { s = n / K; suffix = 'K'; }
+    else if (rounded < 10 * B) { s = n / M; suffix = 'M'; }
+    else if (rounded < 10 * T) { s = n / B; suffix = 'B'; }
+    else { s = n / T; suffix = 'T'; }
+    s = (s >= 10 && s < 100) ? Math.floor(10 * s) / 10 : Math.floor(s);
+    return String(s) + suffix;
+  }
   let lastLog = '';
   /** 提示信息：写入出售弹窗底部的提示行（由 injectSellHint 注入） */
   function setLog(msg) {
@@ -664,6 +718,7 @@
       '<div id="mwiPlcsCfgRows">' +
       catRow('excludeFood', '排除食物') +
       catRow('excludeDrink', '排除饮料') +
+      catRow('skipBelowVendor', '右一扣税后低于商人价不出售') +
       thresholdRow('enableMaxUnitValue', '忽略单价超过', 'maxUnitValue') +
       thresholdRow('enableMinTotalValue', '忽略总价低于', 'minTotalValue') +
       '</div>' +
@@ -806,8 +861,24 @@
       injectSellHint();
     });
 
-    // 4. 按设置决定报价：默认出售报价（不干预）/ 最佳出售报价（左一）/ 最佳购买报价（右一）
+    // 4. 保护规则：右一价扣税后低于商人价 → 本项不出售（直接跳过，不填价）
     const cfg = readSettings();
+    if (cfg.skipBelowVendor) {
+      const inst = getMarketInst();
+      const { bid } = readOrderBookLevel0(inst);
+      const vendor = vendorPriceOf(item.itemHrid);
+      const tax = taxRateOf(item.itemHrid);
+      if (bid && bid.price > 0 && vendor > 0) {
+        const net = bid.price * (1 - tax);
+        if (net < vendor) {
+          setLog('右一 ' + fmtShorten(bid.price) + ' 扣税后 ' + fmtShorten(Math.round(net)) + ' 低于商人价 ' + fmtShorten(vendor) + '，跳过本项');
+          closeModal();
+          return 'skip'; // 主循环识别后进入下一项
+        }
+      }
+    }
+
+    // 5. 按设置决定报价：默认出售报价（不干预）/ 最佳出售报价（左一）/ 最佳购买报价（右一）
     if (cfg.sellOption === SELL_OPTION_BEST_ASK || cfg.sellOption === SELL_OPTION_BEST_BID) {
       const inst = getMarketInst();
       const { ask, bid } = readOrderBookLevel0(inst);
@@ -821,7 +892,7 @@
       }
     }
 
-    // 5. 点「最多」填满数量
+    // 6. 点「最多」填满数量
     const maxBtn = Array.from(panel.querySelectorAll('button')).find((b) => /^最多$|^Max$|^All$/.test(b.textContent.trim()));
     if (maxBtn) {
       maxBtn.click();
@@ -876,20 +947,42 @@
     });
   }
 
-  /** 出售弹窗价格行下方注入一行：左一（最低卖价+数量）/ 右一（最高买价+数量），数据来自订单簿一级 */
+  /** 出售弹窗价格行下方注入一行：左一（最低卖价+数量）/ 右一（最高买价+数量），价格可点击填入价格框 */
   function injectOrderBookLine() {
     const modal = qCls('MarketplacePanel_modalContent');
     if (!modal || modal.querySelector('#mwiPlcsOrderLine')) return;
     const inst = getMarketInst();
     const { ask, bid } = readOrderBookLevel0(inst);
     const parts = [];
-    if (ask) parts.push('左一 ' + fmt(ask.price) + ' (x' + fmt(ask.quantity) + ')');
-    if (bid) parts.push('右一 ' + fmt(bid.price) + ' (x' + fmt(bid.quantity) + ')');
+    if (ask) {
+      parts.push('<span class="ob ask" data-price="' + ask.price + '">左一 ' + fmtShorten(ask.price) + '</span><span class="qtyc"> (x' + fmtShorten(ask.quantity) + ')</span>');
+    }
+    if (bid) {
+      parts.push('<span class="ob bid" data-price="' + bid.price + '">右一 ' + fmtShorten(bid.price) + '</span><span class="qtyc"> (x' + fmtShorten(bid.quantity) + ')</span>');
+    }
     if (!parts.length) parts.push('暂无订单簿数据');
     const line = document.createElement('div');
     line.id = 'mwiPlcsOrderLine';
-    line.style.cssText = 'margin:0.375rem auto 0;max-width:100%;box-sizing:border-box;text-align:center;color:#9fb0c8;font-size:0.75rem;line-height:1.35;background:#10131a;border:0.0625rem solid #2a2f3b;border-radius:0.25rem;padding:0.25rem 0.375rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-    line.textContent = parts.join('  /  ');
+    line.style.cssText = 'margin:0.375rem auto 0;max-width:100%;box-sizing:border-box;text-align:center;color:#9fb0c8;font-size:0.875rem;line-height:1.35;background:#10131a;border:0.0625rem solid #2a2f3b;border-radius:0.25rem;padding:0.25rem 0.375rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    line.innerHTML = parts.join('  /  ');
+    // 数量部分点击不触发填价（与整块点击区分）
+    line.querySelectorAll('.qtyc').forEach((q) => {
+      q.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+    });
+    // 点击左一/右一（标签+价格整块）→ 填入上方价格框（与「最佳出售报价」点击等价）
+    line.querySelectorAll('.ob[data-price]').forEach((ob) => {
+      ob.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const target = Number(ob.dataset.price);
+        if (!(target > 0)) return;
+        const m = getMarketInst();
+        if (m && typeof m.handleSetPriceInput === 'function') {
+          m.handleSetPriceInput(target);
+          setLog('已填入价格 ' + fmtShorten(target) + '，请确认');
+        }
+      });
+    });
     // 挂在价格输入区（priceInputs）之后，即价格行正下方
     const priceInputs = qCls('MarketplacePanel_priceInputs', modal);
     if (priceInputs && priceInputs.parentNode) {
@@ -949,8 +1042,9 @@
         const item = items[i];
         renderQueue(items, i);
         try {
-          await setupItemForm(item);
-          await waitForModalClose();
+          const r = await setupItemForm(item);
+          // 保护规则跳过（弹窗已关闭）→ 直接进入下一项，不再等弹窗关闭
+          if (r !== 'skip') await waitForModalClose();
         } catch (e) {
           if (e.message === '已停止') break;
           setLog('⚠️ 处理失败：' + e.message + '（已跳过）');
