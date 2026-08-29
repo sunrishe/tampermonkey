@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.6.0
+// @version      0.6.3
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -256,6 +256,11 @@
       writeStore({ ignored: [...set] });
     } catch (e) { /* ignore */ }
   }
+  function clearIgnored() {
+    try {
+      writeStore({ ignored: [] });
+    } catch (e) { /* ignore */ }
+  }
 
   // ---- 设置（出售报价选项 + 排除规则）----
 
@@ -342,8 +347,8 @@
     '.mwiPlcsCfgRow .suffix{color:#9fb0c8;font-size:0.8125rem;white-space:nowrap;}' +
     '#mwiPlcsCfgReset{width:100%;margin-top:0.5rem;}' +
     /* 已屏蔽列表：直接在标题下方展示，带图标与本地化名称 */
-    '#mwiPlcsIgnoreList{max-height:14rem;overflow:auto;background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;padding:0.25rem 0.375rem;}' +
-    '.mwiPlcsIgnoreHead{font-weight:600;color:#9fb0c8;padding:0.125rem 0 0.25rem;}' +
+    '#mwiPlcsIgnoreList{background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;padding:0.25rem 0.375rem;}' +
+    '.mwiPlcsIgnoreHead{font-weight:600;color:#9fb0c8;padding:0.125rem 0 0.25rem;display:flex;align-items:center;justify-content:space-between;gap:0.5rem;}' +
     '.mwiPlcsIgnoreRow{display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0.125rem;border-bottom:0.0625rem solid #262b37;}' +
     '.mwiPlcsIgnoreRow:last-child{border-bottom:none;}' +
     '.mwiPlcsIgnoreName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
@@ -745,7 +750,7 @@
     });
   }
 
-  /** 已屏蔽列表：面板内直接展示（图标 + 本地化名称 + 解锁） */
+  /** 已屏蔽列表：面板内直接展示（图标 + 本地化名称 + 解锁 + 标题行清空按钮） */
   function renderIgnoreList() {
     const listEl = document.querySelector('#mwiPlcsIgnoreList');
     if (!listEl) return;
@@ -758,10 +763,18 @@
       '<div class="mwiPlcsIgnoreRow">' + itemIconSvg(hrid, 1.4) +
       '<span class="mwiPlcsIgnoreName" title="' + esc(hrid) + '">' + esc(localizedName(hrid)) + '</span>' +
       '<button class="mwiPlcsBtn small" data-unignore="' + esc(hrid) + '">解锁</button></div>').join('');
-    listEl.innerHTML = '<div class="mwiPlcsIgnoreHead">已屏蔽物品 (' + set.size + ')</div>' + rows;
+    // 标题行：左=已屏蔽物品 (N)，右=清空按钮（一键清空全部）
+    listEl.innerHTML =
+      '<div class="mwiPlcsIgnoreHead"><span>已屏蔽物品 (' + set.size + ')</span>' +
+      '<button type="button" class="mwiPlcsBtn small danger" id="mwiPlcsIgnoreClear">清空</button></div>' +
+      rows;
     listEl.querySelectorAll('[data-unignore]').forEach((b) => {
       b.addEventListener('click', () => { removeIgnored(b.dataset.unignore); renderIgnoreList(); setLog('已解锁，下次批量将重新包含该物品'); });
     });
+    const clearBtn = listEl.querySelector('#mwiPlcsIgnoreClear');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => { clearIgnored(); renderIgnoreList(); setLog('已清空全部屏蔽物品'); });
+    }
   }
 
   // ============================================================
@@ -832,7 +845,8 @@
     if (!host || typeof host.handleGoToMarketplace !== 'function') throw new Error('无法获取游戏宿主导航方法');
     host.handleGoToMarketplace(item.itemHrid, 0);
 
-    // 2. 等物品摘要视图加载出「+ 新出售挂牌」（需订单簿 WS 数据，慢时点一次刷新）
+    // 2. 等物品摘要视图加载出「+ 新出售挂牌」（需订单簿 WS 数据）。
+    //    容错：首次超时 → 重新导航（处理首次调用被竞态吞掉/未生效）→ 再超时 → 点「刷新」→ 最后才报错跳过
     let sellBtn = null;
     const findSellBtn = () => {
       const b = panel.querySelector('[class*="newSellListingButton"]');
@@ -840,6 +854,11 @@
       return Array.from(panel.querySelectorAll('button')).find((x) => /新出售挂牌|new sell listing/i.test(x.textContent || ''));
     };
     sellBtn = await waitFor(findSellBtn, 15000);
+    if (!sellBtn) {
+      setLog('摘要加载慢，重新导航一次…');
+      host.handleGoToMarketplace(item.itemHrid, 0);
+      sellBtn = await waitFor(findSellBtn, 15000);
+    }
     if (!sellBtn) {
       const refresh = Array.from(panel.querySelectorAll('button')).find((b) => /^刷新$|^Refresh$/.test(b.textContent.trim()));
       if (refresh) { refresh.click(); setLog('订单簿加载慢，已点「刷新」，继续等待…'); }
