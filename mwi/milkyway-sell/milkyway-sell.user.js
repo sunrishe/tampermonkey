@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.3.0
+// @version      0.5.1
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -13,8 +13,8 @@
 // @run-at       document-idle
 // @license      MIT
 // @homepage     https://github.com/sunrishe/tampermonkey/tree/master/mwi/milkyway-sell
-// @downloadURL  https://raw.githubusercontent.com/sunrishe/tampermonkey/refs/heads/master/mwi/milkyway-sell/milkyway-sell.user.js
-// @updateURL    https://raw.githubusercontent.com/sunrishe/tampermonkey/refs/heads/master/mwi/milkyway-sell/milkyway-sell.user.js
+// @updateURL    https://raw.githubusercontent.com/sunrishe/tampermonkey/master/mwi/milkyway-sell/milkyway-sell.meta.js
+// @downloadURL  https://raw.githubusercontent.com/sunrishe/tampermonkey/master/mwi/milkyway-sell/milkyway-sell.user.js
 // ==/UserScript==
 
 (function () {
@@ -28,10 +28,22 @@
   // 工具
   // ============================================================
 
-  const STORE_KEY = 'mwi-plcs.ignoredItems.v1';
-  // 排除规则：单价超过 50M 的物品、食物（food）、饮料（drink）分类
-  const MAX_UNIT_VALUE = 50_000_000;
-  const EXCLUDE_CATEGORIES = new Set(['/item_categories/food', '/item_categories/drink']);
+  // 本脚本本地存储只用这一个 key：{ ignored: string[], settings: {...} }
+  const STORE_KEY = 'mwi-plcs.data.v1';
+  // 出售报价：默认出售报价 / 最佳出售报价（左一）/ 最佳购买报价（右一）
+  const SELL_OPTION_DEFAULT = 'default';
+  const SELL_OPTION_BEST_ASK = 'bestAsk';
+  const SELL_OPTION_BEST_BID = 'bestBid';
+  // 默认排除规则：食物（food）、饮料（drink）分类；单价超过 50M；总价低于 1M（均以 M 为单位配置，需勾选启用；总价默认不勾选）
+  const DEFAULT_SETTINGS = {
+    sellOption: SELL_OPTION_DEFAULT,
+    excludeFood: true,
+    excludeDrink: true,
+    enableMaxUnitValue: true,
+    maxUnitValue: 50, // 单位 M
+    enableMinTotalValue: false,
+    minTotalValue: 1, // 单位 M
+  };
 
   function log(...args) {
     console.log('[MWI-快速出售]', ...args);
@@ -129,13 +141,28 @@
     return (d && d.name) || itemHrid.split('/').pop() || itemHrid;
   }
 
-  /** 读取可出售库存：库存位置、0 强化、市场可交易、未屏蔽，按总价值降序 */
+  /**
+   * 读订单簿一级（左一/右一）：marketItemOrderBooks.orderBooks[等级].asks/bids[0] = {price, quantity}。
+   * 返回 { ask, bid }，缺失时为 null（与游戏 getBestAskPrice/getBestBidPrice 同源）。
+   */
+  function readOrderBookLevel0(inst) {
+    inst = inst || getMarketInst();
+    if (!inst || !inst.state) return { ask: null, bid: null };
+    const ob = inst.state.marketItemOrderBooks;
+    if (!ob || !ob.orderBooks || ob.itemHrid !== inst.state.itemHrid) return { ask: null, bid: null };
+    const lv = String(inst.state.enhancementLevel || inst.state.enhancementLevelInput || 0);
+    const book = ob.orderBooks[lv];
+    return { ask: (book && book.asks && book.asks[0]) || null, bid: (book && book.bids && book.bids[0]) || null };
+  }
+
+  /** 读取可出售库存：库存位置、0 强化、市场可交易、未屏蔽、未超单价上限、未低于总价下限，按总价值降序 */
   function readSellableItems() {
     const st = getGameState();
     if (!st) return [];
     // 市场面板的 marketItems 是官方可交易物品清单（不含金币、牛铃袋等）
     const tradable = new Set((getMarketInst()?.state.marketItems || []).map((m) => m.itemHrid));
     const ignored = readIgnored();
+    const cfg = readSettings();
     const out = [];
     for (const stack of st.characterItemMap.values()) {
       if (!stack || stack.itemLocationHrid !== '/item_locations/inventory') continue;
@@ -143,45 +170,84 @@
       if (Number(stack.count) <= 0) continue;
       const detail = st.itemDetailDict && st.itemDetailDict[stack.itemHrid];
       if (!detail) continue;
-      if (EXCLUDE_CATEGORIES.has(detail.categoryHrid)) continue;
+      if (cfg.excludeFood && detail.categoryHrid === '/item_categories/food') continue;
+      if (cfg.excludeDrink && detail.categoryHrid === '/item_categories/drink') continue;
       if (!(tradable.size ? tradable.has(stack.itemHrid) : detail.isTradable)) continue;
       if (ignored.has(stack.itemHrid)) continue;
       const value = marketValue(stack.itemHrid);
-      if (value > MAX_UNIT_VALUE) continue;
+      const total = value * Number(stack.count);
+      // 阈值以 M 为单位存储（cfg.maxUnitValue=50 表示 50M），启用时换算成具体金额比较
+      if (cfg.enableMaxUnitValue && cfg.maxUnitValue > 0 && value > cfg.maxUnitValue * 1e6) continue;
+      if (cfg.enableMinTotalValue && cfg.minTotalValue > 0 && total < cfg.minTotalValue * 1e6) continue;
       out.push({
         itemHrid: stack.itemHrid,
         name: localizedName(stack.itemHrid),
         count: Number(stack.count),
         value,
-        total: value * Number(stack.count),
+        total,
       });
     }
     out.sort((a, b) => b.total - a.total);
     return out;
   }
 
-  // ---- 屏蔽清单（localStorage 持久化）----
+  // ---- 本地存储（单一 key：{ ignored: string[], settings: {...} }）----
+
+  function readStore() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+      if (raw && typeof raw === 'object' && Array.isArray(raw.ignored)) return raw;
+      return { ignored: [], settings: {} };
+    } catch (e) {
+      return { ignored: [], settings: {} };
+    }
+  }
+  function writeStore(patch) {
+    try {
+      const cur = readStore();
+      localStorage.setItem(STORE_KEY, JSON.stringify(Object.assign({}, cur, patch)));
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---- 屏蔽清单 ----
 
   function readIgnored() {
-    try {
-      const arr = JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
-      return new Set(Array.isArray(arr) ? arr : []);
-    } catch (e) {
-      return new Set();
-    }
+    return new Set(readStore().ignored || []);
   }
   function addIgnored(itemHrid) {
     try {
       const set = readIgnored();
       set.add(itemHrid);
-      localStorage.setItem(STORE_KEY, JSON.stringify([...set]));
+      writeStore({ ignored: [...set] });
     } catch (e) { /* ignore */ }
   }
   function removeIgnored(itemHrid) {
     try {
       const set = readIgnored();
       set.delete(itemHrid);
-      localStorage.setItem(STORE_KEY, JSON.stringify([...set]));
+      writeStore({ ignored: [...set] });
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---- 设置（出售报价选项 + 排除规则）----
+
+  function readSettings() {
+    try {
+      const raw = readStore().settings || {};
+      const cfg = Object.assign({}, DEFAULT_SETTINGS, raw);
+      cfg.maxUnitValue = Number(cfg.maxUnitValue) || 0;
+      cfg.minTotalValue = Number(cfg.minTotalValue) || 0;
+      if (![SELL_OPTION_DEFAULT, SELL_OPTION_BEST_ASK, SELL_OPTION_BEST_BID].includes(cfg.sellOption)) {
+        cfg.sellOption = SELL_OPTION_DEFAULT;
+      }
+      return cfg;
+    } catch (e) {
+      return Object.assign({}, DEFAULT_SETTINGS);
+    }
+  }
+  function saveSettings(patch) {
+    try {
+      writeStore({ settings: Object.assign({}, readSettings(), patch) });
     } catch (e) { /* ignore */ }
   }
 
@@ -219,7 +285,7 @@
     /* 入口按钮（市场 tab 行末尾，克隆游戏 tab 样式类）：success 金橙底色 + 深字，醒目易识别 */
     '#mwiPlcsTabEntry{background:#ee9a1d;color:#2a1a00;font-weight:600;cursor:pointer;}' +
     '#mwiPlcsTabEntry:hover{background:#f5a92e;}' +
-    '#mwiPlcsPanel{display:none;margin-top:0.5rem;width:23.6rem;height:auto;max-height:52vh;overflow:auto;background:#171a22;border:0.0625rem solid #363b48;border-radius:0.625rem;padding:0.625rem;color:#dbe0ea;font-size:0.875rem;box-shadow:0 0.375rem 1.5rem rgba(0,0,0,.5);}' +
+    '#mwiPlcsPanel{display:none;margin-top:0.5rem;width:23.6rem;height:auto;max-height:52vh;overflow-y:auto;overflow-x:hidden;background:#171a22;border:0.0625rem solid #363b48;border-radius:0.625rem;padding:0.625rem;color:#dbe0ea;font-size:0.875rem;box-shadow:0 0.375rem 1.5rem rgba(0,0,0,.5);}' +
     '#mwiPlcsPanel.open{display:block;}' +
     /* 标题行：可整体拖动；右侧放操作按钮与最小化 */
     '#mwiPlcsHeader{display:flex;align-items:center;gap:0.375rem;margin-bottom:0.375rem;cursor:grab;user-select:none;}' +
@@ -230,6 +296,23 @@
     '.mwiPlcsBtn.danger{background:#6b3d3d;color:#fff;}' +
     '.mwiPlcsBtn.small{padding:0.1875rem 0.5rem;font-size:0.8125rem;}' +
     '#mwiPlcsMin{min-width:1.125rem;}' +
+    /* 设置区块（默认展开）：出售选项 + 排除规则 */
+    '#mwiPlcsSettings{margin-top:0.375rem;padding:0.5rem;background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;}' +
+    '#mwiPlcsSettings .sec{font-weight:600;color:#9fb0c8;margin:0.25rem 0 0.375rem;}' +
+    '.mwiPlcsSellOpt{display:flex;flex-wrap:wrap;gap:0.375rem;margin-bottom:0.5rem;}' +
+    '.mwiPlcsSellOpt .mwiPlcsBtn{padding:0.25rem 0.5rem;font-size:0.8125rem;}' +
+    '.mwiPlcsSellOpt .mwiPlcsBtn.on{background:#3d6b4f;color:#fff;}' +
+    '#mwiPlcsCfgRows{display:flex;flex-wrap:wrap;gap:0.375rem 0.75rem;}' +
+    /* 每个选项一行内「复选框+文字+输入框」贴近排列；多选项自动换行，放不下才折行 */
+    '.mwiPlcsCfgRow{display:flex;align-items:center;gap:0.375rem;font-size:0.875rem;}' +
+    '.mwiPlcsCfgRow label{cursor:pointer;color:#dbe0ea;display:flex;align-items:center;gap:0.375rem;white-space:nowrap;}' +
+    '.mwiPlcsCfgRow input[type=checkbox]{width:0.95rem;height:0.95rem;accent-color:#3d6b4f;cursor:pointer;}' +
+    '.mwiPlcsCfgRow input[type=number]{width:5.5rem;background:#0d1117;color:#dbe0ea;border:0.0625rem solid #2a2f3b;border-radius:0.25rem;padding:0.1875rem 0.375rem;font-family:inherit;font-size:0.875rem;}' +
+    /* 未勾选（未启用）的排除规则整体置灰，与启用态明显区分 */
+    '.mwiPlcsCfgRow.off label{color:#5b6577;}' +
+    '.mwiPlcsCfgRow.off input[type=number]{color:#5b6577;border-color:#232833;}' +
+    '.mwiPlcsCfgRow .suffix{color:#9fb0c8;font-size:0.8125rem;white-space:nowrap;}' +
+    '#mwiPlcsCfgReset{width:100%;margin-top:0.5rem;}' +
     /* 已屏蔽列表：直接在标题下方展示，带图标与本地化名称 */
     '#mwiPlcsIgnoreList{max-height:8rem;overflow:auto;background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;padding:0.25rem 0.375rem;}' +
     '.mwiPlcsIgnoreHead{font-weight:600;color:#9fb0c8;padding:0.125rem 0 0.25rem;}' +
@@ -264,11 +347,12 @@
       '<style>' + UI_CSS + '</style>' +
       '<div id="mwiPlcsPanel">' +
       '  <div id="mwiPlcsHeader">' +
-      '    <span id="mwiPlcsTitle">MWI 快速出售</span>' +
+      '    <span id="mwiPlcsTitle">快速出售</span>' +
       '    <button class="mwiPlcsBtn danger" id="mwiPlcsStop" style="display:none"><svg width="0.85em" height="0.85em" viewBox="0 0 16 16" aria-hidden="true" style="display:inline-block;vertical-align:-0.08em;margin-right:0.25rem"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" fill="currentColor"/></svg>停止</button>' +
       '    <button class="mwiPlcsBtn primary" id="mwiPlcsStart">▶ 开始</button>' +
       '    <button class="mwiPlcsBtn" id="mwiPlcsMin" title="最小化">—</button>' +
       '  </div>' +
+      '  <div id="mwiPlcsSettings"></div>' +
       '  <div id="mwiPlcsIgnoreList"></div>' +
       '  <div id="mwiPlcsProgress" style="display:none"><span class="pl" id="mwiPlcsProgressText"></span><span class="pr" id="mwiPlcsProgressIgnored"></span></div>' +
       '  <div id="mwiPlcsQueue"></div>' +
@@ -328,6 +412,7 @@
     };
     bindDrag(host.querySelector('#mwiPlcsHeader'), null);
 
+    renderSettings(); // 设置区块默认展开，构建时渲染一次（后续用户操作时自行重渲染）
     host.querySelector('#mwiPlcsStart').addEventListener('click', () => { startBatch(); });
     host.querySelector('#mwiPlcsStop').addEventListener('click', () => { running = false; clearHint(); clearBatchUI(); });
     watchDisconnect();
@@ -344,11 +429,12 @@
   function tabEntry() {
     return document.querySelector('#mwiPlcsTabEntry');
   }
-  /** 展开面板：刷新忽略列表，并把宿主钳回可视区（防止拖动过后面板部分不可见）；入口按钮保持可见 */
+  /** 展开面板：刷新忽略列表与设置，并把宿主钳回可视区（防止拖动过后面板部分不可见）；入口按钮保持可见 */
   function openPanel() {
     const panel = document.querySelector('#mwiPlcsPanel');
     if (!panel) return;
     panel.classList.add('open');
+    renderSettings();
     renderIgnoreList();
     if (!floatHost) return;
     const pr = panel.getBoundingClientRect();
@@ -360,6 +446,13 @@
   function closePanel() {
     const panel = document.querySelector('#mwiPlcsPanel');
     if (panel) panel.classList.remove('open');
+  }
+  /** 入口按钮点击：面板在展示/隐藏之间切换 */
+  function togglePanel() {
+    const panel = document.querySelector('#mwiPlcsPanel');
+    if (!panel) return;
+    if (panel.classList.contains('open')) closePanel();
+    else openPanel();
   }
 
   /**
@@ -388,7 +481,7 @@
     entry.setAttribute('role', 'tab');
     entry.textContent = '🐄 批量出售';
     flex.appendChild(entry);
-    entry.addEventListener('click', openPanel);
+    entry.addEventListener('click', togglePanel);
   }
 
   function clampFloatHost() {
@@ -418,12 +511,15 @@
     watchdogTimer = setInterval(() => {
       const st = getGameState();
       const disconnected = !!(st && st.isFullDisconnected);
-      window.__PLCS_WATCH__ = { floatHost: !!floatHost, timer: !!watchdogTimer, disconnected: disconnected ? 1 : 0 };
-      if (disconnected && floatHost) {
+      window.__PLCS_WATCH__ = { floatHost: !!floatHost, timer: !!watchdogTimer, disconnected: disconnected ? 1 : 0, inGame: !!st };
+      if (!st) {
+        // 不在游戏页面（游戏状态不可用）：回收组件、退出出售状态；重新进入游戏后由下方分支重建
+        if (floatHost) unloadComponent();
+      } else if (disconnected && floatHost) {
         unloadComponent();
-      } else if (!disconnected && st && !floatHost) {
+      } else if (!disconnected && !floatHost) {
         buildPanel(); // 重新进入游戏 → 重新挂载
-      } else if (!disconnected && floatHost) {
+      } else if (floatHost) {
         injectTabEntry(); // 市场 tab 行出现/重挂载时补注入入口按钮
       }
     }, 1500);
@@ -535,6 +631,65 @@
     if (right) right.textContent = '已屏蔽 ' + readIgnored().size;
     if (t) t.textContent = '🐄 批量出售 (' + n + '/' + total + ')';
   }
+  /**
+   * 设置区块：出售报价三选一 + 排除规则（食物/饮料开关、单价/总价阈值以 M 为单位、勾选才生效）+ 重置默认。
+   * 修改即时写入 localStorage，直接作用于后续批量出售的报价与筛选决策。
+   */
+  function renderSettings() {
+    const root = document.querySelector('#mwiPlcsSettings');
+    if (!root) return;
+    const cfg = readSettings();
+    const opt = (v, label, title) =>
+      '<button type="button" class="mwiPlcsBtn' + (cfg.sellOption === v ? ' on' : '') + '" data-sell-opt="' + v + '" title="' + title + '">' + label + '</button>';
+    const thresholdRow = (onKey, text, numKey) => {
+      const enabled = !!cfg[onKey];
+      return '<div class="mwiPlcsCfgRow' + (enabled ? '' : ' off') + '">' +
+        '<label><input type="checkbox" data-cfg="' + onKey + '"' + (enabled ? ' checked' : '') + '> ' + text + '</label>' +
+        '<input type="number" data-cfg="' + numKey + '" min="0" step="1" value="' + cfg[numKey] + '"' + (enabled ? '' : ' disabled') + '>' +
+        '<span class="suffix">M</span></div>';
+    };
+    const catRow = (key, text) => {
+      const on = !!cfg[key];
+      return '<div class="mwiPlcsCfgRow' + (on ? '' : ' off') + '">' +
+        '<label><input type="checkbox" data-cfg="' + key + '"' + (on ? ' checked' : '') + '> ' + text + '</label></div>';
+    };
+    root.innerHTML =
+      '<div class="sec">出售报价</div>' +
+      '<div class="mwiPlcsSellOpt">' +
+      opt(SELL_OPTION_DEFAULT, '默认出售报价', '使用游戏默认价格（打开弹窗时的初始值）') +
+      opt(SELL_OPTION_BEST_ASK, '最佳出售报价', '使用订单簿左一（最低卖价）') +
+      opt(SELL_OPTION_BEST_BID, '最佳购买报价', '使用订单簿右一（最高买价）') +
+      '</div>' +
+      '<div class="sec">排除规则</div>' +
+      '<div id="mwiPlcsCfgRows">' +
+      catRow('excludeFood', '排除食物') +
+      catRow('excludeDrink', '排除饮料') +
+      thresholdRow('enableMaxUnitValue', '忽略单价超过', 'maxUnitValue') +
+      thresholdRow('enableMinTotalValue', '忽略总价低于', 'minTotalValue') +
+      '</div>' +
+      '<button type="button" class="mwiPlcsBtn" id="mwiPlcsCfgReset">重置默认</button>';
+    root.querySelectorAll('[data-sell-opt]').forEach((b) => {
+      b.addEventListener('click', () => {
+        saveSettings({ sellOption: b.dataset.sellOpt });
+        renderSettings();
+        setLog('出售报价已设为「' + b.textContent.trim() + '」');
+      });
+    });
+    root.querySelectorAll('[data-cfg]').forEach((el) => {
+      el.addEventListener('change', () => {
+        if (el.type === 'checkbox') saveSettings({ [el.dataset.cfg]: el.checked });
+        else saveSettings({ [el.dataset.cfg]: Number(el.value) || 0 });
+        renderSettings();
+        setLog('排除规则已更新');
+      });
+    });
+    root.querySelector('#mwiPlcsCfgReset').addEventListener('click', () => {
+      writeStore({ settings: Object.assign({}, DEFAULT_SETTINGS) });
+      renderSettings();
+      setLog('已恢复默认设置');
+    });
+  }
+
   /** 已屏蔽列表：面板内直接展示（图标 + 本地化名称 + 解锁） */
   function renderIgnoreList() {
     const listEl = document.querySelector('#mwiPlcsIgnoreList');
@@ -642,23 +797,27 @@
     if (!(await waitFor(() => qCls('MarketplacePanel_modalContent', panel), 8000))) {
       throw new Error('出售弹窗未打开');
     }
-    // 用 MutationObserver 监听弹窗（modalContent + 发布按钮容器）就绪即注入忽略按钮与提示，避免空等
+    // 用 MutationObserver 监听弹窗（modalContent + 发布按钮容器）就绪即注入忽略按钮、左一/右一行与提示，避免空等
     await whenSellModalReady(() => {
       injectIgnoreButton();
+      injectOrderBookLine();
       // 弹窗打开即展示正确提示：等待用户确认价格/数量后发布
       setLog('等待确认：检查价格/数量后点「发布出售挂牌」，或点「忽略该物品」/关闭弹窗完成本项');
       injectSellHint();
     });
 
-    // 4. 点「最佳出售报价」（实机验证：点击后价格立即生效）
-    const best = panel.querySelector('[class*="MarketplacePanel_bestPrice"]');
-    if (best) {
-      const t = (best.textContent || '').trim();
-      if (t && !/N\/A|n\/a/i.test(t)) {
-        best.click();
+    // 4. 按设置决定报价：默认出售报价（不干预）/ 最佳出售报价（左一）/ 最佳购买报价（右一）
+    const cfg = readSettings();
+    if (cfg.sellOption === SELL_OPTION_BEST_ASK || cfg.sellOption === SELL_OPTION_BEST_BID) {
+      const inst = getMarketInst();
+      const { ask, bid } = readOrderBookLevel0(inst);
+      const target = cfg.sellOption === SELL_OPTION_BEST_ASK ? ask : bid;
+      if (target && target.price > 0 && inst && typeof inst.handleSetPriceInput === 'function') {
+        inst.handleSetPriceInput(target.price);
         await waitMs(300);
+        setLog('已填入' + (cfg.sellOption === SELL_OPTION_BEST_ASK ? '最佳出售报价（左一）' : '最佳购买报价（右一）') + '，请确认');
       } else {
-        setLog('暂无最佳出售报价，保持默认价格，请留意');
+        setLog('暂无' + (cfg.sellOption === SELL_OPTION_BEST_ASK ? '最佳出售报价' : '最佳购买报价') + '，保持默认价格，请留意');
       }
     }
 
@@ -717,6 +876,29 @@
     });
   }
 
+  /** 出售弹窗价格行下方注入一行：左一（最低卖价+数量）/ 右一（最高买价+数量），数据来自订单簿一级 */
+  function injectOrderBookLine() {
+    const modal = qCls('MarketplacePanel_modalContent');
+    if (!modal || modal.querySelector('#mwiPlcsOrderLine')) return;
+    const inst = getMarketInst();
+    const { ask, bid } = readOrderBookLevel0(inst);
+    const parts = [];
+    if (ask) parts.push('左一 ' + fmt(ask.price) + ' (x' + fmt(ask.quantity) + ')');
+    if (bid) parts.push('右一 ' + fmt(bid.price) + ' (x' + fmt(bid.quantity) + ')');
+    if (!parts.length) parts.push('暂无订单簿数据');
+    const line = document.createElement('div');
+    line.id = 'mwiPlcsOrderLine';
+    line.style.cssText = 'margin:0.375rem auto 0;max-width:100%;box-sizing:border-box;text-align:center;color:#9fb0c8;font-size:0.75rem;line-height:1.35;background:#10131a;border:0.0625rem solid #2a2f3b;border-radius:0.25rem;padding:0.25rem 0.375rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+    line.textContent = parts.join('  /  ');
+    // 挂在价格输入区（priceInputs）之后，即价格行正下方
+    const priceInputs = qCls('MarketplacePanel_priceInputs', modal);
+    if (priceInputs && priceInputs.parentNode) {
+      priceInputs.parentNode.insertBefore(line, priceInputs.nextSibling);
+    } else {
+      modal.appendChild(line);
+    }
+  }
+
   /** 等待用户完成出售（弹窗关闭即下一步） */
   async function waitForModalClose() {
     const panel = qCls('MarketplacePanel_marketplacePanel');
@@ -745,16 +927,18 @@
       floatHost.style.top = 'auto';
       floatHost.style.bottom = gap + 'px';
     }
-    // 开始出售时不展示已屏蔽列表（停止后恢复）
+    // 开始出售时不展示已屏蔽列表与设置区块（面板保持现有紧凑高度，停止后恢复）
     const ignoreList = document.querySelector('#mwiPlcsIgnoreList');
     if (ignoreList) ignoreList.style.display = 'none';
+    const settingsEl = document.querySelector('#mwiPlcsSettings');
+    if (settingsEl) settingsEl.style.display = 'none';
 
     try {
       if (!(await ensureMarketOpen())) throw new Error('无法打开市场面板');
       // 市场面板打开后再读库存，确保可交易清单（marketItems）已就绪
       const items = readSellableItems();
       if (!items.length) {
-        setLog('没有可出售的库存物品（已排除不可交易 / 强化>0 / 单价超 50M / 食物饮料 / 已屏蔽）');
+        setLog('没有可出售的库存物品（已排除不可交易 / 强化>0 / 命中排除规则 / 已屏蔽）');
         return;
       }
       setLog('共 ' + items.length + ' 个物品可出售，按总价值从高到低开始…');
@@ -782,9 +966,10 @@
       running = false;
       if (stopBtn) stopBtn.style.display = 'none';
       if (startBtn) startBtn.style.display = 'inline-block';
-      // 停止/结束后清空进度与队列，恢复已屏蔽列表
+      // 停止/结束后清空进度与队列，恢复已屏蔽列表与设置区块
       clearBatchUI();
       if (ignoreList) { ignoreList.style.display = ''; renderIgnoreList(); }
+      if (settingsEl) { settingsEl.style.display = ''; renderSettings(); }
     }
   }
 
