@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.6.4
+// @version      0.6.5
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -182,6 +182,38 @@
     const d = st && st.itemDetailDict && st.itemDetailDict[itemHrid];
     return d ? Number(d.sellPrice) || 0 : 0;
   }
+  /**
+   * 游戏价格档位步长（getBinnedPrice，源码 31318 行）：按首位数定步长，<1000 为 1 不取档。
+   * 1、2 → 5×10^(位数-4)；3、4 → 1×10^(位数-3)；5-9 → 2×10^(位数-3)。即 1/2 开头同档（如 7 位都是 5000），
+   * 档位跳变只发生在 2→3（5000→10000）、4→5（10000→20000）、9→升位。
+   */
+  function binStep(price) {
+    price = parseInt(price, 10);
+    if (isNaN(price) || price <= 1) return 1;
+    const lead = String(price)[0];
+    const len = String(price).length;
+    if (lead === '1' || lead === '2') return len >= 4 ? 5 * Math.pow(10, len - 4) : 1;
+    if (lead === '3' || lead === '4') return len >= 3 ? Math.pow(10, len - 3) : 1;
+    return len >= 3 ? 2 * Math.pow(10, len - 3) : 1;
+  }
+  /**
+   * 左一/右一之间相差的档位数：从低价起按「+ 按钮」方式逐档上取整（当前价+1 → getBinnedPrice 向上取整，
+   * 等价于每档加 binStep(当前价)），数到高价为止；无数据/异常时返回 null。
+   */
+  function diffBins(askPrice, bidPrice) {
+    askPrice = Number(askPrice);
+    bidPrice = Number(bidPrice);
+    if (!(askPrice > 0) || !(bidPrice > 0)) return null;
+    let cur = Math.min(askPrice, bidPrice);
+    const hi = Math.max(askPrice, bidPrice);
+    let steps = 0;
+    while (cur < hi) {
+      cur += binStep(cur);
+      steps++;
+      if (steps > 100000) return null; // 异常数据保护，防死循环
+    }
+    return steps;
+  }
 
   /** 读取可出售库存：库存位置、0 强化、市场可交易、未屏蔽、未超单价上限、未低于总价下限，按总价值降序 */
   function readSellableItems() {
@@ -353,8 +385,8 @@
     '.mwiPlcsIgnoreRow:last-child{border-bottom:none;}' +
     '.mwiPlcsIgnoreName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
     '#mwiPlcsQueue{max-height:9.5rem;overflow:auto;}' +
-    /* 面板提示：无符合条件数据等场景显示在队列上方 */
-    '#mwiPlcsPanelMsg{margin-top:0.375rem;padding:0.5rem;background:#3a2f24;border:0.0625rem solid #6b4f2a;border-radius:0.25rem;color:#e8c78a;font-size:0.8125rem;line-height:1.4;text-align:center;}' +
+    /* 页面级提示 toast：悬浮在页面顶部居中，自动消失 */
+    '#mwiPlcsToast{position:fixed;top:0.75rem;left:50%;transform:translateX(-50%);z-index:1000000;max-width:min(30rem,calc(100vw - 1.5rem));box-sizing:border-box;padding:0.625rem 1rem;background:#3a2f24;border:0.0625rem solid #6b4f2a;border-radius:0.375rem;color:#e8c78a;font-size:0.875rem;line-height:1.4;text-align:center;box-shadow:0 0.375rem 1.5rem rgba(0,0,0,.5);}' +
     /* 左一/右一可点击价格：下划线链接样式，hover 高亮 */
     '#mwiPlcsOrderLine a{color:#7fb3e8;text-decoration:underline;cursor:pointer;}' +
     '#mwiPlcsOrderLine a:hover{color:#a9d4ff;}' +
@@ -363,6 +395,8 @@
     '#mwiPlcsOrderLine .ob.ask{color:#e8a33d;}' +
     '#mwiPlcsOrderLine .ob.bid{color:#5fd38a;}' +
     '#mwiPlcsOrderLine .ob .qtyc{color:#9fb0c8;text-decoration:none;cursor:default;}' +
+    /* 左/右中间「x 档」：常规色、无下划线、不可点击 */
+    '#mwiPlcsOrderLine .obDiff{color:#9fb0c8;}' +
     /* 进度行：左右布局——左=进度（当前/总数+百分比），右=已屏蔽物品数 */
     '#mwiPlcsProgress{margin-top:0.375rem;padding:0.25rem 0.375rem;background:#1a2430;border:0.0625rem solid #2c4155;border-radius:0.25rem;justify-content:space-between;align-items:center;gap:0.5rem;}' +
     '#mwiPlcsProgress .pl{color:#cfe3f5;font-weight:600;}' +
@@ -397,7 +431,6 @@
       '  </div>' +
       '  <div id="mwiPlcsSettings"></div>' +
       '  <div id="mwiPlcsIgnoreList"></div>' +
-      '  <div id="mwiPlcsPanelMsg" style="display:none"></div>' +
       '  <div id="mwiPlcsProgress" style="display:none"><span class="pl" id="mwiPlcsProgressText"></span><span class="pr" id="mwiPlcsProgressIgnored"></span></div>' +
       '  <div id="mwiPlcsQueue"></div>' +
       '</div>';
@@ -580,18 +613,27 @@
     if (t && t.textContent !== '🐄 批量出售') t.textContent = '🐄 批量出售';
   }
 
-  /** 面板提示：显示在队列上方（无符合条件数据等场景），空字符串隐藏 */
+  let panelMsgTimer = null;
+  /** 页面级提示：悬浮在页面顶部居中，3 秒自动消失；多次调用重置计时 */
   function showPanelMsg(msg) {
-    const el = document.querySelector('#mwiPlcsPanelMsg');
-    if (!el) return;
-    el.textContent = msg;
-    el.style.display = '';
+    clearPanelMsg();
+    let toast = document.querySelector('#mwiPlcsToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'mwiPlcsToast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.display = 'block';
+    panelMsgTimer = setTimeout(clearPanelMsg, 3000);
   }
   function clearPanelMsg() {
-    const el = document.querySelector('#mwiPlcsPanelMsg');
-    if (!el) return;
-    el.textContent = '';
-    el.style.display = 'none';
+    if (panelMsgTimer) { clearTimeout(panelMsgTimer); panelMsgTimer = null; }
+    const toast = document.querySelector('#mwiPlcsToast');
+    if (toast) {
+      toast.style.display = 'none';
+      toast.textContent = '';
+    }
   }
 
   function esc(s) {
@@ -983,7 +1025,7 @@
     });
   }
 
-  /** 出售弹窗价格行下方注入一行：左一（最低卖价+数量）/ 右一（最高买价+数量），价格可点击填入价格框 */
+  /** 出售弹窗价格行下方注入一行：左（最低卖价+数量）/ 右（最高买价+数量），中间为 x 档，价格可点击填入价格框 */
   function injectOrderBookLine() {
     const modal = qCls('MarketplacePanel_modalContent');
     if (!modal || modal.querySelector('#mwiPlcsOrderLine')) return;
@@ -991,10 +1033,14 @@
     const { ask, bid } = readOrderBookLevel0(inst);
     const parts = [];
     if (ask) {
-      parts.push('<span class="ob ask" data-price="' + ask.price + '">左一 ' + fmtShorten(ask.price) + '</span><span class="qtyc"> (x' + fmtShorten(ask.quantity) + ')</span>');
+      parts.push('<span class="ob ask" data-price="' + ask.price + '">左 ' + fmtShorten(ask.price) + '</span><span class="qtyc"> (x' + fmtShorten(ask.quantity) + ')</span>');
+    }
+    if (ask && bid) {
+      const d = diffBins(ask.price, bid.price);
+      if (d !== null) parts.push('<span class="obDiff">' + d + ' 档</span>');
     }
     if (bid) {
-      parts.push('<span class="ob bid" data-price="' + bid.price + '">右一 ' + fmtShorten(bid.price) + '</span><span class="qtyc"> (x' + fmtShorten(bid.quantity) + ')</span>');
+      parts.push('<span class="ob bid" data-price="' + bid.price + '">右 ' + fmtShorten(bid.price) + '</span><span class="qtyc"> (x' + fmtShorten(bid.quantity) + ')</span>');
     }
     if (!parts.length) parts.push('暂无订单簿数据');
     const line = document.createElement('div');
