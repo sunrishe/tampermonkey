@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.6.3
+// @version      0.6.4
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -353,6 +353,8 @@
     '.mwiPlcsIgnoreRow:last-child{border-bottom:none;}' +
     '.mwiPlcsIgnoreName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
     '#mwiPlcsQueue{max-height:9.5rem;overflow:auto;}' +
+    /* 面板提示：无符合条件数据等场景显示在队列上方 */
+    '#mwiPlcsPanelMsg{margin-top:0.375rem;padding:0.5rem;background:#3a2f24;border:0.0625rem solid #6b4f2a;border-radius:0.25rem;color:#e8c78a;font-size:0.8125rem;line-height:1.4;text-align:center;}' +
     /* 左一/右一可点击价格：下划线链接样式，hover 高亮 */
     '#mwiPlcsOrderLine a{color:#7fb3e8;text-decoration:underline;cursor:pointer;}' +
     '#mwiPlcsOrderLine a:hover{color:#a9d4ff;}' +
@@ -395,6 +397,7 @@
       '  </div>' +
       '  <div id="mwiPlcsSettings"></div>' +
       '  <div id="mwiPlcsIgnoreList"></div>' +
+      '  <div id="mwiPlcsPanelMsg" style="display:none"></div>' +
       '  <div id="mwiPlcsProgress" style="display:none"><span class="pl" id="mwiPlcsProgressText"></span><span class="pr" id="mwiPlcsProgressIgnored"></span></div>' +
       '  <div id="mwiPlcsQueue"></div>' +
       '</div>';
@@ -575,6 +578,20 @@
     if (q) q.innerHTML = '';
     if (p) p.style.display = 'none';
     if (t && t.textContent !== '🐄 批量出售') t.textContent = '🐄 批量出售';
+  }
+
+  /** 面板提示：显示在队列上方（无符合条件数据等场景），空字符串隐藏 */
+  function showPanelMsg(msg) {
+    const el = document.querySelector('#mwiPlcsPanelMsg');
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = '';
+  }
+  function clearPanelMsg() {
+    const el = document.querySelector('#mwiPlcsPanelMsg');
+    if (!el) return;
+    el.textContent = '';
+    el.style.display = 'none';
   }
 
   function esc(s) {
@@ -1027,6 +1044,7 @@
   async function startBatch() {
     if (running) return;
     running = true;
+    clearPanelMsg(); // 每次开始先清掉上一次的面板提示（如空数据提示）
     const stopBtn = document.querySelector('#mwiPlcsStop');
     const startBtn = document.querySelector('#mwiPlcsStart');
     if (stopBtn) stopBtn.style.display = 'inline-block';
@@ -1051,6 +1069,7 @@
       const items = readSellableItems();
       if (!items.length) {
         setLog('没有可出售的库存物品（已排除不可交易 / 强化>0 / 命中排除规则 / 已屏蔽）');
+        showPanelMsg('没有符合条件的数据：已排除不可交易 / 强化>0 / 命中排除规则 / 已屏蔽的物品，请调整设置或检查库存');
         return;
       }
       setLog('共 ' + items.length + ' 个物品可出售，按总价值从高到低开始…');
