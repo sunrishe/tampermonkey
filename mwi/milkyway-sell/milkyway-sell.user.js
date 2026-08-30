@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.6.5
+// @version      0.6.6
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -1033,14 +1033,14 @@
     const { ask, bid } = readOrderBookLevel0(inst);
     const parts = [];
     if (ask) {
-      parts.push('<span class="ob ask" data-price="' + ask.price + '">左 ' + fmtShorten(ask.price) + '</span><span class="qtyc"> (x' + fmtShorten(ask.quantity) + ')</span>');
+      parts.push('<span class="qtyc">(x' + fmtShorten(ask.quantity) + ')</span> <span class="ob ask" data-price="' + ask.price + '">左 ' + fmtShorten(ask.price) + '</span>');
     }
     if (ask && bid) {
       const d = diffBins(ask.price, bid.price);
       if (d !== null) parts.push('<span class="obDiff">' + d + ' 档</span>');
     }
     if (bid) {
-      parts.push('<span class="ob bid" data-price="' + bid.price + '">右 ' + fmtShorten(bid.price) + '</span><span class="qtyc"> (x' + fmtShorten(bid.quantity) + ')</span>');
+      parts.push('<span class="qtyc">(x' + fmtShorten(bid.quantity) + ')</span> <span class="ob bid" data-price="' + bid.price + '">右 ' + fmtShorten(bid.price) + '</span>');
     }
     if (!parts.length) parts.push('暂无订单簿数据');
     const line = document.createElement('div');
