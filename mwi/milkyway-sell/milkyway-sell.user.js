@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.6.7
+// @version      0.6.8
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -48,7 +48,7 @@
   };
 
   function log(...args) {
-    console.log('[MWI-快速出售]', ...args);
+    console.log('[MWI-快速出售]', ...args.map((a) => (typeof a === 'object' && a !== null ? JSON.stringify(a) : a)));
   }
 
   /** 按 CSS module 前缀找元素（哈希类名随构建变化，前缀是稳定锚点） */
@@ -350,10 +350,12 @@
     /* 入口按钮（市场 tab 行末尾，克隆游戏 tab 样式类）：success 金橙底色 + 深字，醒目易识别 */
     '#mwiPlcsTabEntry{background:#ee9a1d;color:#2a1a00;font-weight:600;cursor:pointer;}' +
     '#mwiPlcsTabEntry:hover{background:#f5a92e;}' +
-    '#mwiPlcsPanel{display:none;margin-top:0.5rem;width:23.6rem;height:auto;max-height:52vh;overflow-y:auto;overflow-x:hidden;background:#171a22;border:0.0625rem solid #363b48;border-radius:0.625rem;padding:0.625rem;color:#dbe0ea;font-size:0.875rem;box-shadow:0 0.375rem 1.5rem rgba(0,0,0,.5);}' +
-    '#mwiPlcsPanel.open{display:block;}' +
-    /* 标题行：可整体拖动；右侧放操作按钮与最小化 */
-    '#mwiPlcsHeader{display:flex;align-items:center;gap:0.375rem;margin-bottom:0.375rem;cursor:grab;user-select:none;}' +
+    '#mwiPlcsPanel{display:none;flex-direction:column;margin-top:0.5rem;width:23.6rem;max-height:52vh;background:#171a22;border:0.0625rem solid #363b48;border-radius:0.625rem;padding:0.625rem;color:#dbe0ea;font-size:0.875rem;box-shadow:0 0.375rem 1.5rem rgba(0,0,0,.5);}' +
+    '#mwiPlcsPanel.open{display:flex;}' +
+    /* 标题行：固定在面板顶部不随内容滚动（flex 不收缩），可整体拖动；右侧放操作按钮与最小化 */
+    '#mwiPlcsHeader{flex:0 0 auto;display:flex;align-items:center;gap:0.375rem;margin-bottom:0.375rem;padding-bottom:0.5rem;border-bottom:0.0625rem solid #2a2f3b;cursor:grab;user-select:none;}' +
+    /* 面板内容区：仅此区域滚动（标题固定在其上方） */
+    '#mwiPlcsBody{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;}' +
     '#mwiPlcsTitle{flex:1;font-size:1rem;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;}' +
     '.mwiPlcsBtn{display:inline-flex;align-items:center;justify-content:center;padding:0.25rem 0.625rem;margin:0;border:none;border-radius:0.25rem;background:#2b3140;color:#dbe0ea;font-size:0.875rem;font-family:inherit;cursor:pointer;min-height:1.8rem;}' +
     '.mwiPlcsBtn:hover{background:#39415a;}' +
@@ -380,8 +382,8 @@
     '#mwiPlcsCfgReset{width:100%;margin-top:0.5rem;}' +
     /* 已屏蔽列表：直接在标题下方展示，带图标与本地化名称 */
     '#mwiPlcsIgnoreList{background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;padding:0.25rem 0.375rem;}' +
-    '.mwiPlcsIgnoreHead{font-weight:600;color:#9fb0c8;padding:0.125rem 0 0.25rem;display:flex;align-items:center;justify-content:space-between;gap:0.5rem;}' +
-    '.mwiPlcsIgnoreRow{display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0.125rem;border-bottom:0.0625rem solid #262b37;}' +
+    '.mwiPlcsIgnoreHead{font-weight:600;color:#9fb0c8;padding:0.25rem 0;display:flex;align-items:center;justify-content:space-between;gap:0.5rem;}' +
+    '.mwiPlcsIgnoreRow{display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0;border-bottom:0.0625rem solid #262b37;}' +
     '.mwiPlcsIgnoreRow:last-child{border-bottom:none;}' +
     '.mwiPlcsIgnoreName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
     '#mwiPlcsQueue{max-height:9.5rem;overflow:auto;}' +
@@ -429,10 +431,12 @@
       '    <button class="mwiPlcsBtn primary" id="mwiPlcsStart">▶ 开始</button>' +
       '    <button class="mwiPlcsBtn" id="mwiPlcsMin" title="最小化">—</button>' +
       '  </div>' +
-      '  <div id="mwiPlcsSettings"></div>' +
-      '  <div id="mwiPlcsIgnoreList"></div>' +
-      '  <div id="mwiPlcsProgress" style="display:none"><span class="pl" id="mwiPlcsProgressText"></span><span class="pr" id="mwiPlcsProgressIgnored"></span></div>' +
-      '  <div id="mwiPlcsQueue"></div>' +
+      '  <div id="mwiPlcsBody">' +
+      '    <div id="mwiPlcsSettings"></div>' +
+      '    <div id="mwiPlcsIgnoreList"></div>' +
+      '    <div id="mwiPlcsProgress" style="display:none"><span class="pl" id="mwiPlcsProgressText"></span><span class="pr" id="mwiPlcsProgressIgnored"></span></div>' +
+      '    <div id="mwiPlcsQueue"></div>' +
+      '  </div>' +
       '</div>';
     document.body.appendChild(host);
 
@@ -665,12 +669,12 @@
     return String(s) + suffix;
   }
   let lastLog = '';
-  /** 提示信息：写入出售弹窗底部的提示行（由 injectSellHint 注入） */
-  function setLog(msg) {
+  /** 提示信息：写入出售弹窗底部的提示行（由 injectSellHint 注入）；toConsole=false 时不打印控制台（纯 UI 反馈类日志） */
+  function setLog(msg, toConsole) {
     lastLog = msg;
     const el = document.querySelector('#mwiPlcsLog');
     if (el) el.textContent = msg;
-    log(msg);
+    if (toConsole !== false) log(msg);
   }
   /** 清空弹窗提示行（停止/结束后调用，面板上不保留提示） */
   function clearHint() {
@@ -791,7 +795,7 @@
       b.addEventListener('click', () => {
         saveSettings({ sellOption: b.dataset.sellOpt });
         renderSettings();
-        setLog('出售报价已设为「' + b.textContent.trim() + '」');
+        setLog('出售报价已设为「' + b.textContent.trim() + '」', false);
       });
     });
     root.querySelectorAll('[data-cfg]').forEach((el) => {
@@ -799,13 +803,13 @@
         if (el.type === 'checkbox') saveSettings({ [el.dataset.cfg]: el.checked });
         else saveSettings({ [el.dataset.cfg]: Number(el.value) || 0 });
         renderSettings();
-        setLog('排除规则已更新');
+        setLog('排除规则已更新', false);
       });
     });
     root.querySelector('#mwiPlcsCfgReset').addEventListener('click', () => {
       writeStore({ settings: Object.assign({}, DEFAULT_SETTINGS) });
       renderSettings();
-      setLog('已恢复默认设置');
+      setLog('已恢复默认设置', false);
     });
   }
 
@@ -828,11 +832,11 @@
       '<button type="button" class="mwiPlcsBtn small danger" id="mwiPlcsIgnoreClear">清空</button></div>' +
       rows;
     listEl.querySelectorAll('[data-unignore]').forEach((b) => {
-      b.addEventListener('click', () => { removeIgnored(b.dataset.unignore); renderIgnoreList(); setLog('已解锁，下次批量将重新包含该物品'); });
+      b.addEventListener('click', () => { removeIgnored(b.dataset.unignore); renderIgnoreList(); setLog('已解锁，下次批量将重新包含该物品', false); });
     });
     const clearBtn = listEl.querySelector('#mwiPlcsIgnoreClear');
     if (clearBtn) {
-      clearBtn.addEventListener('click', () => { clearIgnored(); renderIgnoreList(); setLog('已清空全部屏蔽物品'); });
+      clearBtn.addEventListener('click', () => { clearIgnored(); renderIgnoreList(); setLog('已清空全部屏蔽物品', false); });
     }
   }
 
@@ -935,7 +939,7 @@
       injectIgnoreButton();
       injectOrderBookLine();
       // 弹窗打开即展示正确提示：等待用户确认价格/数量后发布
-      setLog('等待确认：检查价格/数量后点「发布出售挂牌」，或点「忽略该物品」/关闭弹窗完成本项');
+      setLog('等待确认：检查价格/数量后点「发布出售挂牌」，或点「忽略该物品」/关闭弹窗完成本项', false);
       injectSellHint();
     });
 
@@ -949,7 +953,7 @@
       if (bid && bid.price > 0 && vendor > 0) {
         const net = bid.price * (1 - tax);
         if (net < vendor) {
-          setLog('右一 ' + fmtShorten(bid.price) + ' 扣税后 ' + fmtShorten(Math.round(net)) + ' 低于商人价 ' + fmtShorten(vendor) + '，跳过本项');
+          setLog('右一 ' + fmtShorten(bid.price) + ' 扣税后 ' + fmtShorten(Math.round(net)) + ' 低于商人价 ' + fmtShorten(vendor) + '，跳过本项', false);
           closeModal();
           return 'skip'; // 主循环识别后进入下一项
         }
@@ -964,9 +968,9 @@
       if (target && target.price > 0 && inst && typeof inst.handleSetPriceInput === 'function') {
         inst.handleSetPriceInput(target.price);
         await waitMs(300);
-        setLog('已填入' + (cfg.sellOption === SELL_OPTION_BEST_ASK ? '最佳出售报价（左一）' : '最佳购买报价（右一）') + '，请确认');
+        setLog('已填入' + (cfg.sellOption === SELL_OPTION_BEST_ASK ? '最佳出售报价（左一）' : '最佳购买报价（右一）') + '，请确认', false);
       } else {
-        setLog('暂无' + (cfg.sellOption === SELL_OPTION_BEST_ASK ? '最佳出售报价' : '最佳购买报价') + '，保持默认价格，请留意');
+        setLog('暂无' + (cfg.sellOption === SELL_OPTION_BEST_ASK ? '最佳出售报价' : '最佳购买报价') + '，保持默认价格，请留意', false);
       }
     }
 
@@ -1017,9 +1021,9 @@
     btn.addEventListener('click', () => {
       const inst = getMarketInst();
       const itemHrid = inst && inst.state && inst.state.itemHrid;
-      if (!itemHrid) { setLog('忽略失败：未识别当前物品'); return; }
+      if (!itemHrid) { setLog('忽略失败：未识别当前物品', false); return; }
       addIgnored(itemHrid);
-      setLog('已屏蔽「' + itemHrid.split('/').pop() + '」，本次跳过；可在面板「已屏蔽」中解锁');
+      setLog('已屏蔽「' + itemHrid.split('/').pop() + '」，本次跳过；可在面板「已屏蔽」中解锁', false);
       renderIgnoreList();
       if (inst && typeof inst.handleHidePostListing === 'function') inst.handleHidePostListing();
     });
@@ -1061,7 +1065,7 @@
         const m = getMarketInst();
         if (m && typeof m.handleSetPriceInput === 'function') {
           m.handleSetPriceInput(target);
-          setLog('已填入价格 ' + fmtShorten(target) + '，请确认');
+          setLog('已填入价格 ' + fmtShorten(target) + '，请确认', false);
         }
       });
     });
