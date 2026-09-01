@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.6.8
+// @version      0.6.9
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -402,7 +402,7 @@
     /* 进度行：左右布局——左=进度（当前/总数+百分比），右=已屏蔽物品数 */
     '#mwiPlcsProgress{margin-top:0.375rem;padding:0.25rem 0.375rem;background:#1a2430;border:0.0625rem solid #2c4155;border-radius:0.25rem;justify-content:space-between;align-items:center;gap:0.5rem;}' +
     '#mwiPlcsProgress .pl{color:#cfe3f5;font-weight:600;}' +
-    '#mwiPlcsProgress .pr{color:#9fb0c8;font-weight:400;font-size:0.8125rem;white-space:nowrap;}' +
+    '#mwiPlcsProgress .pr{color:#9fb0c8;font-weight:400;font-size:0.8125rem;text-align:right;white-space:nowrap;}' +
     /* 队列条目：单行展示——图标 + 名称 + ×数量 + 总价值挤在一行，整条固定行高，内容再多也不变高 */
     '.mwiPlcsItem{padding:0.1875rem 0.375rem;margin:0.125rem 0;background:#1e2230;border:0.0625rem solid #2c3142;border-radius:0.25rem;display:flex;align-items:center;gap:0.5rem;min-width:0;height:1.6rem;box-sizing:border-box;}' +
     '.mwiPlcsItem.current{border-color:#4a7a5c;}' +
@@ -560,7 +560,7 @@
     entry.id = 'mwiPlcsTabEntry';
     entry.className = ref.className.split(' ').filter((c) => !/Mui-selected/.test(c)).join(' ');
     entry.setAttribute('role', 'tab');
-    entry.textContent = '🐄 批量出售';
+    entry.textContent = '🐄 快速出售';
     flex.appendChild(entry);
     entry.addEventListener('click', togglePanel);
   }
@@ -614,7 +614,7 @@
     clearHint();
     if (q) q.innerHTML = '';
     if (p) p.style.display = 'none';
-    if (t && t.textContent !== '🐄 批量出售') t.textContent = '🐄 批量出售';
+    if (t && t.textContent !== '🐄 快速出售') t.textContent = '🐄 快速出售';
   }
 
   let panelMsgTimer = null;
@@ -721,7 +721,9 @@
   function renderQueue(items, idx) {
     const el = document.querySelector('#mwiPlcsQueue');
     if (!el) return;
-    renderProgress(idx, items.length);
+    // 本次所有物品总价值（预估挂单金额），供进度行右侧展示
+    const queueTotal = items.reduce((s, it) => s + (Number(it.total) || 0), 0);
+    renderProgress(idx, items.length, queueTotal);
     // 只展示当前项与下一项（共 2 条）
     const show = items.slice(idx, idx + 2);
     if (!show.length) { el.innerHTML = ''; return; }
@@ -734,14 +736,14 @@
       '<span class="total">' + fmt(it.total) + '</span></div>').join('');
   }
 
-  /** 总进度行：左=进度（当前/总数+百分比），右=已屏蔽物品数；并同步到 tab 入口按钮的文本 */
-  function renderProgress(idx, total) {
+  /** 总进度行：左=进度（当前/总数+百分比），右=已屏蔽物品数 + 本次总价；并同步到 tab 入口按钮的文本 */
+  function renderProgress(idx, total, queueTotal) {
     const el = document.querySelector('#mwiPlcsProgress');
     const t = tabEntry();
     if (!el) return;
     if (!total) {
       el.style.display = 'none';
-      if (t && t.textContent !== '🐄 批量出售') t.textContent = '🐄 批量出售';
+      if (t && t.textContent !== '🐄 快速出售') t.textContent = '🐄 快速出售';
       return;
     }
     el.style.display = 'flex';
@@ -750,8 +752,14 @@
     const left = el.querySelector('.pl');
     const right = el.querySelector('.pr');
     if (left) left.textContent = '进度：' + n + ' / ' + total + '（' + pct + '%）';
-    if (right) right.textContent = '已屏蔽 ' + readIgnored().size;
-    if (t) t.textContent = '🐄 批量出售 (' + n + '/' + total + ')';
+    if (right) {
+      // 右=已屏蔽数 + 本次全部物品总价（取整到 M 级单位，用 fmt 展示）
+      const parts = ['已屏蔽 ' + readIgnored().size];
+      const qt = Number(queueTotal) || 0;
+      if (qt > 0) parts.push('总价 ' + fmt(qt));
+      right.textContent = parts.join(' · ');
+    }
+    if (t) t.textContent = '🐄 快速出售 (' + n + '/' + total + ')';
   }
   /**
    * 设置区块：出售报价三选一 + 排除规则（食物/饮料开关、单价/总价阈值以 M 为单位、勾选才生效）+ 重置默认。
