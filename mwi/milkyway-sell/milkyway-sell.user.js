@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MWI 快速出售助手
 // @namespace    http://tampermonkey.net/
-// @version      0.6.9
+// @version      0.7.0
 // @description  银河牛奶放置库存快速出售辅助：批量挂单出售库存物品，自动选品、跳转、填最佳报价与最大数量，出售动作由用户确认；不调用游戏接口
 // @author       sunrishe
 // @match        https://milkywayidle.com/*
@@ -28,16 +28,29 @@
   // 工具
   // ============================================================
 
-  // 本脚本本地存储只用这一个 key：{ ignored: string[], settings: {...} }
+  // 本脚本本地存储只用这一个 key：{ ignored: [{ hrid, keep }], settings: {...} }
   const STORE_KEY = 'mwi-plcs.data.v1';
   // 出售报价：默认出售报价 / 最佳出售报价（左一）/ 最佳购买报价（右一）
   const SELL_OPTION_DEFAULT = 'default';
   const SELL_OPTION_BEST_ASK = 'bestAsk';
   const SELL_OPTION_BEST_BID = 'bestBid';
-  // 默认排除规则：食物（food）、饮料（drink）分类；单价超过 50M；总价低于 1M（均以 M 为单位配置，需勾选启用；总价默认不勾选）；
+  // 排除迷宫物品 / 排除地下城钥匙的判定：
+  // 迷宫物品 = itemDetailDict[itemHrid].categoryHrid === LABYRINTH_CATEGORY_HRID（整个迷宫分类）；
+  // 地下城钥匙 = 4 把门票钥匙（entry）+ 4 把开箱钥匙（chest），碎片（key_fragment）不在排除清单内
+  const LABYRINTH_CATEGORY_HRID = '/item_categories/labyrinth';
+  const DUNGEON_KEYS = new Set([
+    '/items/chimerical_entry_key', '/items/chimerical_chest_key',
+    '/items/sinister_entry_key', '/items/sinister_chest_key',
+    '/items/enchanted_entry_key', '/items/enchanted_chest_key',
+    '/items/pirate_entry_key', '/items/pirate_chest_key',
+  ]);
+  // 默认排除规则：迷宫分类、地下城钥匙（门票+开箱，不含碎片）、食物（food）、饮料（drink）；
+  // 单价超过 50M；总价低于 1M（均以 M 为单位配置，需勾选启用；总价默认不勾选）；
   // 右一价扣税后低于商人价不出售（默认开启，保护性规则）
   const DEFAULT_SETTINGS = {
     sellOption: SELL_OPTION_DEFAULT,
+    excludeLabyrinth: true,
+    excludeDungeonKeys: true,
     excludeFood: true,
     excludeDrink: true,
     enableMaxUnitValue: true,
@@ -46,6 +59,8 @@
     minTotalValue: 1, // 单位 M
     skipBelowVendor: true,
   };
+  // 版本号：与 @version 头保持一致，展示在面板标题后的小字里
+  const APP_VERSION = '0.7.0';
 
   function log(...args) {
     console.log('[MWI-快速出售]', ...args.map((a) => (typeof a === 'object' && a !== null ? JSON.stringify(a) : a)));
@@ -215,13 +230,17 @@
     return steps;
   }
 
-  /** 读取可出售库存：库存位置、0 强化、市场可交易、未屏蔽、未超单价上限、未低于总价下限，按总价值降序 */
+  /**
+   * 读取可出售库存：库存位置、0 强化、市场可交易、未忽略、未超单价上限、未低于总价下限，按总价值降序。
+   * 忽略规则携带保留数量 keep：keep=0 整物品忽略不卖；keep>0 时库存数量未超过 keep 则全部保留不卖，
+   * 超过 keep 才卖，sellCount = 库存 - keep（0 强化可堆叠物品通常单格库存，判断按格进行）。
+   */
   function readSellableItems() {
     const st = getGameState();
     if (!st) return [];
     // 市场面板的 marketItems 是官方可交易物品清单（不含金币、牛铃袋等）
     const tradable = new Set((getMarketInst()?.state.marketItems || []).map((m) => m.itemHrid));
-    const ignored = readIgnored();
+    const rules = readIgnored(); // Map: itemHrid -> keep
     const cfg = readSettings();
     const out = [];
     for (const stack of st.characterItemMap.values()) {
@@ -230,12 +249,19 @@
       if (Number(stack.count) <= 0) continue;
       const detail = st.itemDetailDict && st.itemDetailDict[stack.itemHrid];
       if (!detail) continue;
+      if (cfg.excludeLabyrinth && detail.categoryHrid === LABYRINTH_CATEGORY_HRID) continue;
+      if (cfg.excludeDungeonKeys && DUNGEON_KEYS.has(stack.itemHrid)) continue;
       if (cfg.excludeFood && detail.categoryHrid === '/item_categories/food') continue;
       if (cfg.excludeDrink && detail.categoryHrid === '/item_categories/drink') continue;
       if (!(tradable.size ? tradable.has(stack.itemHrid) : detail.isTradable)) continue;
-      if (ignored.has(stack.itemHrid)) continue;
+      const keep = rules.has(stack.itemHrid) ? Number(rules.get(stack.itemHrid)) || 0 : null;
+      if (keep !== null) {
+        if (keep <= 0) continue; // 该物品被整项忽略（保留 0）
+        if (Number(stack.count) <= keep) continue; // 库存未超过保留数量，全部保留不卖
+      }
+      const sellCount = keep > 0 ? Number(stack.count) - keep : Number(stack.count);
       const value = marketValue(stack.itemHrid);
-      const total = value * Number(stack.count);
+      const total = value * sellCount;
       // 阈值以 M 为单位存储（cfg.maxUnitValue=50 表示 50M），启用时换算成具体金额比较
       if (cfg.enableMaxUnitValue && cfg.maxUnitValue > 0 && value > cfg.maxUnitValue * 1e6) continue;
       if (cfg.enableMinTotalValue && cfg.minTotalValue > 0 && total < cfg.minTotalValue * 1e6) continue;
@@ -243,6 +269,8 @@
         itemHrid: stack.itemHrid,
         name: localizedName(stack.itemHrid),
         count: Number(stack.count),
+        sellCount,
+        keep: keep > 0 ? keep : 0,
         value,
         total,
       });
@@ -251,7 +279,7 @@
     return out;
   }
 
-  // ---- 本地存储（单一 key：{ ignored: string[], settings: {...} }）----
+  // ---- 本地存储（单一 key：{ ignored: [{ hrid, keep }], settings: {...} }）----
 
   function readStore() {
     try {
@@ -269,28 +297,94 @@
     } catch (e) { /* ignore */ }
   }
 
-  // ---- 屏蔽清单 ----
+  // ---- 升级迁移：老版本数据自动收敛到单一 key 并升级格式，完成后清理遗留数据 ----
+  // 历史：0.6.8 及更早用独立的 mwi-plcs.ignoredItems.v1（string[]）与 mwi-plcs.settings.v1；
+  // 0.6.9 收敛为单一 mwi-plcs.data.v1（ignored 仍为 string[]）；0.7.0 起 ignored 升级为 [{ hrid, keep }]。
+  // 迁移规则：老独立 key 只在当前数据对应字段为空时并入（避免覆盖新数据）；
+  // data key 内旧格式 string[] 一律改写为新格式（纯 hrid = 整项忽略 keep 0）；
+  // 迁移完成后删除遗留 key，下次加载自动变成幂等空操作。
+  const LEGACY_IGNORE_KEY = 'mwi-plcs.ignoredItems.v1';
+  const LEGACY_SETTINGS_KEY = 'mwi-plcs.settings.v1';
+  function migrateStore() {
+    try {
+      const store = readStore();
+      // 1) 老独立 key 数据并入（仅当前字段为空时）
+      let movedIgnore = false;
+      try {
+        const oldIgnored = JSON.parse(localStorage.getItem(LEGACY_IGNORE_KEY) || 'null');
+        if (Array.isArray(oldIgnored) && oldIgnored.length && !store.ignored.length) {
+          store.ignored = oldIgnored;
+          movedIgnore = true;
+        }
+      } catch (e) { /* ignore */ }
+      let movedSettings = false;
+      try {
+        const oldSettings = JSON.parse(localStorage.getItem(LEGACY_SETTINGS_KEY) || 'null');
+        if (oldSettings && typeof oldSettings === 'object' && store.settings && !Object.keys(store.settings).length) {
+          store.settings = oldSettings;
+          movedSettings = true;
+        }
+      } catch (e) { /* ignore */ }
+      // 2) data key 内旧格式 string[] → 新格式 [{ hrid, keep }]
+      const isOldFormat = !Array.isArray(store.ignored) ||
+        store.ignored.some((x) => typeof x === 'string' || !x || typeof x.hrid !== 'string');
+      if (isOldFormat) store.ignored = normalizeIgnored(store.ignored);
+      // 3) 有实际变化才落盘；遗留 key 一律删除（无论是否并入，防止下次重复迁移）
+      if (movedIgnore || movedSettings || isOldFormat) localStorage.setItem(STORE_KEY, JSON.stringify(store));
+      localStorage.removeItem(LEGACY_IGNORE_KEY);
+      localStorage.removeItem(LEGACY_SETTINGS_KEY);
+    } catch (e) {
+      log('存储迁移失败：' + (e && e.message));
+    }
+  }
 
+  // ---- 忽略规则（含保留数量 keep）----
+  // 存储格式：ignored 为对象数组 [{ hrid, keep }]，keep=0 表示整物品忽略；
+  // 兼容旧版本 string[]（hrid 字符串），读取时统一归一化为 Map。
+
+  /** 把任意旧/新格式的 ignored 数组归一化为对象数组 [{ hrid, keep }] */
+  function normalizeIgnored(raw) {
+    const out = [];
+    for (const x of Array.isArray(raw) ? raw : []) {
+      if (typeof x === 'string') out.push({ hrid: x, keep: 0 }); // 旧版格式：纯 hrid = 整项忽略
+      else if (x && typeof x.hrid === 'string') out.push({ hrid: x.hrid, keep: Math.max(0, Math.floor(Number(x.keep)) || 0) });
+    }
+    return out;
+  }
+  /** 读忽略规则为 Map：itemHrid -> keep */
   function readIgnored() {
-    return new Set(readStore().ignored || []);
+    const map = new Map();
+    for (const e of normalizeIgnored(readStore().ignored)) map.set(e.hrid, e.keep);
+    return map;
+  }
+  /** 当前忽略规则总数（面板标题等展示用） */
+  function ignoredCount() {
+    return readIgnored().size;
+  }
+  function saveIgnoredEntries(entries) {
+    writeStore({ ignored: normalizeIgnored(entries) });
+  }
+  /** 把某物品加入忽略清单；已存在时更新其 keep（0=整项忽略），不存在时以 keep 0 加入 */
+  function setIgnoredKeep(itemHrid, keep) {
+    try {
+      const map = readIgnored();
+      map.set(itemHrid, Math.max(0, Math.floor(Number(keep)) || 0));
+      saveIgnoredEntries([...map].map(([hrid, k]) => ({ hrid, keep: k })));
+    } catch (e) { /* ignore */ }
   }
   function addIgnored(itemHrid) {
-    try {
-      const set = readIgnored();
-      set.add(itemHrid);
-      writeStore({ ignored: [...set] });
-    } catch (e) { /* ignore */ }
+    setIgnoredKeep(itemHrid, 0);
   }
   function removeIgnored(itemHrid) {
     try {
-      const set = readIgnored();
-      set.delete(itemHrid);
-      writeStore({ ignored: [...set] });
+      const map = readIgnored();
+      map.delete(itemHrid);
+      saveIgnoredEntries([...map].map(([hrid, k]) => ({ hrid, keep: k })));
     } catch (e) { /* ignore */ }
   }
   function clearIgnored() {
     try {
-      writeStore({ ignored: [] });
+      saveIgnoredEntries([]);
     } catch (e) { /* ignore */ }
   }
 
@@ -357,6 +451,7 @@
     /* 面板内容区：仅此区域滚动（标题固定在其上方） */
     '#mwiPlcsBody{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;}' +
     '#mwiPlcsTitle{flex:1;font-size:1rem;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;}' +
+    '#mwiPlcsTitle .mwiPlcsVer{font-size:0.625rem;font-weight:400;color:#8a93a6;margin-left:0.25rem;}' +
     '.mwiPlcsBtn{display:inline-flex;align-items:center;justify-content:center;padding:0.25rem 0.625rem;margin:0;border:none;border-radius:0.25rem;background:#2b3140;color:#dbe0ea;font-size:0.875rem;font-family:inherit;cursor:pointer;min-height:1.8rem;}' +
     '.mwiPlcsBtn:hover{background:#39415a;}' +
     '.mwiPlcsBtn.primary{background:#3d6b4f;color:#fff;}' +
@@ -380,12 +475,18 @@
     '.mwiPlcsCfgRow.off input[type=number]{color:#5b6577;border-color:#232833;}' +
     '.mwiPlcsCfgRow .suffix{color:#9fb0c8;font-size:0.8125rem;white-space:nowrap;}' +
     '#mwiPlcsCfgReset{width:100%;margin-top:0.5rem;}' +
-    /* 已屏蔽列表：直接在标题下方展示，带图标与本地化名称 */
+    /* 已忽略列表：直接在标题下方展示，带图标与本地化名称 + 保留数量输入 + 解锁 */
     '#mwiPlcsIgnoreList{background:#131722;border:0.0625rem solid #262b37;border-radius:0.25rem;padding:0.25rem 0.375rem;}' +
-    '.mwiPlcsIgnoreHead{font-weight:600;color:#9fb0c8;padding:0.25rem 0;display:flex;align-items:center;justify-content:space-between;gap:0.5rem;}' +
-    '.mwiPlcsIgnoreRow{display:flex;align-items:center;gap:0.5rem;padding:0.25rem 0;border-bottom:0.0625rem solid #262b37;}' +
+    /* 表头：标题靠最左；右侧「保留数量」列与条目行输入框同盒模型对齐 */
+    '.mwiPlcsIgnoreHead{display:flex;align-items:center;gap:0.375rem;padding:0.25rem 0;color:#9fb0c8;}' +
+    '.mwiPlcsIgnoreTitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;}' +
+    /* 保留数量列：与下方输入框同宽（3.75rem），字号与按钮一致，悬浮 title 提示详情 */
+    '.mwiPlcsIgnoreHead .mwiPlcsKeepCol{flex:0 0 auto;width:3.75rem;font-weight:400;font-size:0.8125rem;color:#8a93a6;white-space:nowrap;cursor:help;}' +
+    '.mwiPlcsIgnoreRow{display:flex;align-items:center;gap:0.375rem;padding:0.25rem 0;border-bottom:0.0625rem solid #262b37;}' +
     '.mwiPlcsIgnoreRow:last-child{border-bottom:none;}' +
-    '.mwiPlcsIgnoreName{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+    '.mwiPlcsIgnoreName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+    /* 保留数量输入框：窄、深色底，与解锁按钮并排 */
+    '.mwiPlcsIgnoreRow .mwiPlcsKeepInput{width:3.75rem;flex:0 0 auto;background:#0d1117;color:#dbe0ea;border:0.0625rem solid #2a2f3b;border-radius:0.25rem;padding:0.1875rem 0.25rem;font-family:inherit;font-size:0.8125rem;text-align:right;}' +
     '#mwiPlcsQueue{max-height:9.5rem;overflow:auto;}' +
     /* 页面级提示 toast：悬浮在页面顶部居中，自动消失 */
     '#mwiPlcsToast{position:fixed;top:0.75rem;left:50%;transform:translateX(-50%);z-index:1000000;max-width:min(30rem,calc(100vw - 1.5rem));box-sizing:border-box;padding:0.625rem 1rem;background:#3a2f24;border:0.0625rem solid #6b4f2a;border-radius:0.375rem;color:#e8c78a;font-size:0.875rem;line-height:1.4;text-align:center;box-shadow:0 0.375rem 1.5rem rgba(0,0,0,.5);}' +
@@ -399,7 +500,7 @@
     '#mwiPlcsOrderLine .ob .qtyc{color:#9fb0c8;text-decoration:none;cursor:default;}' +
     /* 左/右中间「x 档」：常规色、无下划线、不可点击 */
     '#mwiPlcsOrderLine .obDiff{color:#9fb0c8;}' +
-    /* 进度行：左右布局——左=进度（当前/总数+百分比），右=已屏蔽物品数 */
+    /* 进度行：左右布局——左=进度（当前/总数+百分比），右=已忽略物品数 */
     '#mwiPlcsProgress{margin-top:0.375rem;padding:0.25rem 0.375rem;background:#1a2430;border:0.0625rem solid #2c4155;border-radius:0.25rem;justify-content:space-between;align-items:center;gap:0.5rem;}' +
     '#mwiPlcsProgress .pl{color:#cfe3f5;font-weight:600;}' +
     '#mwiPlcsProgress .pr{color:#9fb0c8;font-weight:400;font-size:0.8125rem;text-align:right;white-space:nowrap;}' +
@@ -426,7 +527,7 @@
       '<style>' + UI_CSS + '</style>' +
       '<div id="mwiPlcsPanel">' +
       '  <div id="mwiPlcsHeader">' +
-      '    <span id="mwiPlcsTitle">快速出售</span>' +
+      '    <span id="mwiPlcsTitle">快速出售<span class="mwiPlcsVer">v' + APP_VERSION + '</span></span>' +
       '    <button class="mwiPlcsBtn danger" id="mwiPlcsStop" style="display:none"><svg width="0.85em" height="0.85em" viewBox="0 0 16 16" aria-hidden="true" style="display:inline-block;vertical-align:-0.08em;margin-right:0.25rem"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" fill="currentColor"/></svg>停止</button>' +
       '    <button class="mwiPlcsBtn primary" id="mwiPlcsStart">▶ 开始</button>' +
       '    <button class="mwiPlcsBtn" id="mwiPlcsMin" title="最小化">—</button>' +
@@ -727,16 +828,18 @@
     // 只展示当前项与下一项（共 2 条）
     const show = items.slice(idx, idx + 2);
     if (!show.length) { el.innerHTML = ''; return; }
-    // 单行条目：图标 + 名称 + ×数量 + 总价值 挤在一行
+    // 单行条目：图标 + 名称 + ×数量(本次可卖数) + 总价值 挤在一行；
+    // 设了保留数量时展示「可卖 X（保留 Y）」，让用户清楚本次实际挂单数
     el.innerHTML = show.map((it, k) =>
-      '<div class="mwiPlcsItem' + (k === 0 ? ' current' : '') + '">' +
+      '<div class="mwiPlcsItem' + (k === 0 ? ' current' : '') + '"' +
+      ' title="' + esc(it.name) + (Number(it.keep) > 0 ? '（保留 ' + it.keep + '）' : '') + '">' +
       itemIconSvg(it.itemHrid, 1.3) +
       '<span class="name">' + esc(it.name) + '</span>' +
-      '<span class="qty">×' + fmt(it.count) + '</span>' +
+      '<span class="qty">' + (Number(it.keep) > 0 ? '×' + fmt(it.sellCount) + '(留' + it.keep + ')' : '×' + fmt(it.sellCount)) + '</span>' +
       '<span class="total">' + fmt(it.total) + '</span></div>').join('');
   }
 
-  /** 总进度行：左=进度（当前/总数+百分比），右=已屏蔽物品数 + 本次总价；并同步到 tab 入口按钮的文本 */
+  /** 总进度行：左=进度（当前/总数+百分比），右=已忽略物品数 + 本次总价；并同步到 tab 入口按钮的文本 */
   function renderProgress(idx, total, queueTotal) {
     const el = document.querySelector('#mwiPlcsProgress');
     const t = tabEntry();
@@ -753,8 +856,8 @@
     const right = el.querySelector('.pr');
     if (left) left.textContent = '进度：' + n + ' / ' + total + '（' + pct + '%）';
     if (right) {
-      // 右=已屏蔽数 + 本次全部物品总价（取整到 M 级单位，用 fmt 展示）
-      const parts = ['已屏蔽 ' + readIgnored().size];
+      // 右=已忽略数 + 本次全部物品总价（取整到 M 级单位，用 fmt 展示）
+      const parts = ['已忽略 ' + ignoredCount()];
       const qt = Number(queueTotal) || 0;
       if (qt > 0) parts.push('总价 ' + fmt(qt));
       right.textContent = parts.join(' · ');
@@ -762,7 +865,7 @@
     if (t) t.textContent = '🐄 快速出售 (' + n + '/' + total + ')';
   }
   /**
-   * 设置区块：出售报价三选一 + 排除规则（食物/饮料开关、单价/总价阈值以 M 为单位、勾选才生效）+ 重置默认。
+   * 设置区块：出售报价三选一 + 排除规则（迷宫/钥匙/食物/饮料开关、单价/总价阈值以 M 为单位、勾选才生效）+ 重置默认。
    * 修改即时写入 localStorage，直接作用于后续批量出售的报价与筛选决策。
    */
   function renderSettings() {
@@ -778,10 +881,10 @@
         '<input type="number" data-cfg="' + numKey + '" min="0" step="1" value="' + cfg[numKey] + '"' + (enabled ? '' : ' disabled') + '>' +
         '<span class="suffix">M</span></div>';
     };
-    const catRow = (key, text) => {
+    const catRow = (key, text, title) => {
       const on = !!cfg[key];
       return '<div class="mwiPlcsCfgRow' + (on ? '' : ' off') + '">' +
-        '<label><input type="checkbox" data-cfg="' + key + '"' + (on ? ' checked' : '') + '> ' + text + '</label></div>';
+        '<label title="' + (title || '') + '"><input type="checkbox" data-cfg="' + key + '"' + (on ? ' checked' : '') + '> ' + text + '</label></div>';
     };
     root.innerHTML =
       '<div class="sec">出售报价</div>' +
@@ -792,6 +895,8 @@
       '</div>' +
       '<div class="sec">排除规则</div>' +
       '<div id="mwiPlcsCfgRows">' +
+      catRow('excludeLabyrinth', '排除迷宫物品', '排除全部迷宫分类物品（火把/斗篷/信标/补给箱等）') +
+      catRow('excludeDungeonKeys', '排除地下城钥匙', '排除 4 把门票钥匙与 4 把开箱钥匙（不含钥匙碎片）') +
       catRow('excludeFood', '排除食物') +
       catRow('excludeDrink', '排除饮料') +
       catRow('skipBelowVendor', '右一扣税后低于商人价不出售') +
@@ -821,30 +926,46 @@
     });
   }
 
-  /** 已屏蔽列表：面板内直接展示（图标 + 本地化名称 + 解锁 + 标题行清空按钮） */
+  /** 已忽略列表：面板内直接展示（图标 + 本地化名称 + 保留数量输入 + 解锁 + 标题行清空按钮） */
   function renderIgnoreList() {
     const listEl = document.querySelector('#mwiPlcsIgnoreList');
     if (!listEl) return;
-    const set = readIgnored();
-    if (!set.size) {
-      listEl.innerHTML = '<div class="mwiPlcsIgnoreHead">已屏蔽物品 (0) —— 出售弹窗里点「忽略该物品」可添加</div>';
-      return;
-    }
-    const rows = [...set].map((hrid) =>
-      '<div class="mwiPlcsIgnoreRow">' + itemIconSvg(hrid, 1.4) +
-      '<span class="mwiPlcsIgnoreName" title="' + esc(hrid) + '">' + esc(localizedName(hrid)) + '</span>' +
-      '<button class="mwiPlcsBtn small" data-unignore="' + esc(hrid) + '">解锁</button></div>').join('');
-    // 标题行：左=已屏蔽物品 (N)，右=清空按钮（一键清空全部）
+    const map = readIgnored();
+    const entries = [...map.entries()].map(([hrid, keep]) => ({ hrid, keep }));
+    const headText = entries.length
+      ? '已忽略物品 (' + entries.length + ')'
+      : '已忽略物品 (0)';
+    // 「保留数量」列名只显示四个字，详情靠悬浮提示（列名与每行输入框的 title 均可悬浮查看）
+    const KEEP_HINT_TITLE = '保留数量：0 = 整项不卖；大于 0 = 库存超过该数量时才卖超出部分，数字填在每行右侧输入框';
+    const rows = entries.map((e) =>
+      '<div class="mwiPlcsIgnoreRow">' + itemIconSvg(e.hrid, 1.4) +
+      '<span class="mwiPlcsIgnoreName" title="' + esc(e.hrid) + '">' + esc(localizedName(e.hrid)) + '</span>' +
+      '<input type="number" class="mwiPlcsKeepInput" min="0" step="1" value="' + e.keep + '" data-keep="' + esc(e.hrid) + '" title="保留数量：0=整项忽略；大于 0 时库存超过该数量才卖超出部分" aria-label="保留数量">' +
+      '<button class="mwiPlcsBtn small" data-unignore="' + esc(e.hrid) + '">解锁</button></div>').join('');
+    // 表头：标题靠最左；「保留数量」列宽与下方输入框完全一致，清空按钮占操作列
     listEl.innerHTML =
-      '<div class="mwiPlcsIgnoreHead"><span>已屏蔽物品 (' + set.size + ')</span>' +
-      '<button type="button" class="mwiPlcsBtn small danger" id="mwiPlcsIgnoreClear">清空</button></div>' +
+      '<div class="mwiPlcsIgnoreHead">' +
+      '<span class="mwiPlcsIgnoreTitle">' + headText + '</span>' +
+      '<span class="mwiPlcsKeepCol" title="' + esc(KEEP_HINT_TITLE) + '">保留数量</span>' +
+      (entries.length ? '<button type="button" class="mwiPlcsBtn small danger" id="mwiPlcsIgnoreClear">清空</button>' : '') +
+      '</div>' +
       rows;
+    listEl.querySelectorAll('[data-keep]').forEach((inp) => {
+      inp.addEventListener('change', () => {
+        const v = Math.max(0, Math.floor(Number(inp.value)) || 0);
+        if (String(v) !== inp.value) inp.value = String(v); // 非法输入回写为 0
+        setIgnoredKeep(inp.dataset.keep, v);
+        setLog(v > 0
+          ? '已设置保留 ' + v + ' 个：库存超过该数量时才出售超出部分'
+          : '已设为整项忽略（保留 0），将不再出售该物品', false);
+      });
+    });
     listEl.querySelectorAll('[data-unignore]').forEach((b) => {
       b.addEventListener('click', () => { removeIgnored(b.dataset.unignore); renderIgnoreList(); setLog('已解锁，下次批量将重新包含该物品', false); });
     });
     const clearBtn = listEl.querySelector('#mwiPlcsIgnoreClear');
     if (clearBtn) {
-      clearBtn.addEventListener('click', () => { clearIgnored(); renderIgnoreList(); setLog('已清空全部屏蔽物品', false); });
+      clearBtn.addEventListener('click', () => { clearIgnored(); renderIgnoreList(); setLog('已清空全部忽略物品', false); });
     }
   }
 
@@ -982,11 +1103,33 @@
       }
     }
 
-    // 6. 点「最多」填满数量
-    const maxBtn = Array.from(panel.querySelectorAll('button')).find((b) => /^最多$|^Max$|^All$/.test(b.textContent.trim()));
-    if (maxBtn) {
-      maxBtn.click();
-      await waitMs(300);
+    // 6. 填数量：
+    //    - 无保留（keep=0）：与旧版一致，点「最多」（= 游戏允许的单次挂单上限 maxQuantity）；
+    //    - 有保留（keep>0）：填精确数量 sellCount = 库存 - 保留，但不超过游戏单次挂单上限 maxQuantity。
+    //    精确填数优先走游戏实例方法（handleQuantityInputChanged + handleCommitQuantityInput，源码同 handleSetPriceInput 一组）；
+    //    实例方法不可用时有保留场景宁可跳过本项，避免误把「保留」库存挂出去。
+    const sellCount = Math.max(1, Math.floor(Number(item.sellCount)) || Number(item.count) || 1);
+    const qtyInst = getMarketInst();
+    let maxQ = qtyInst && qtyInst.state ? Number(qtyInst.state.maxQuantity) : 0;
+    if (!(maxQ > 0)) { await waitMs(400); maxQ = qtyInst && qtyInst.state ? Number(qtyInst.state.maxQuantity) : 0; }
+    const wantExact = Number(item.keep) > 0;
+    const qty = (maxQ > 0 && sellCount > maxQ) ? maxQ : sellCount;
+    if (wantExact) {
+      if (qtyInst && typeof qtyInst.handleQuantityInputChanged === 'function') {
+        qtyInst.handleQuantityInputChanged({ target: { value: String(qty) } });
+        if (typeof qtyInst.handleCommitQuantityInput === 'function') qtyInst.handleCommitQuantityInput();
+        await waitMs(300);
+        setLog('已按保留数量填单：本次挂 ' + fmt(qty) + ' 个（库存 ' + fmt(item.count) + '，保留 ' + item.keep + '）', false);
+      } else {
+        closeModal();
+        throw new Error('无法精确设置保留数量，已跳过（保留 ' + item.keep + ' 个未动）');
+      }
+    } else {
+      const maxBtn = Array.from(panel.querySelectorAll('button')).find((b) => /^最多$|^Max$|^All$/.test(b.textContent.trim()));
+      if (maxBtn) {
+        maxBtn.click();
+        await waitMs(300);
+      }
     }
     return true;
   }
@@ -1031,7 +1174,7 @@
       const itemHrid = inst && inst.state && inst.state.itemHrid;
       if (!itemHrid) { setLog('忽略失败：未识别当前物品', false); return; }
       addIgnored(itemHrid);
-      setLog('已屏蔽「' + itemHrid.split('/').pop() + '」，本次跳过；可在面板「已屏蔽」中解锁', false);
+      setLog('已忽略「' + itemHrid.split('/').pop() + '」，本次跳过；可在面板「已忽略物品」中解锁或改保留数量', false);
       renderIgnoreList();
       if (inst && typeof inst.handleHidePostListing === 'function') inst.handleHidePostListing();
     });
@@ -1115,7 +1258,7 @@
       floatHost.style.top = 'auto';
       floatHost.style.bottom = gap + 'px';
     }
-    // 开始出售时不展示已屏蔽列表与设置区块（面板保持现有紧凑高度，停止后恢复）
+    // 开始出售时不展示已忽略列表与设置区块（面板保持现有紧凑高度，停止后恢复）
     const ignoreList = document.querySelector('#mwiPlcsIgnoreList');
     if (ignoreList) ignoreList.style.display = 'none';
     const settingsEl = document.querySelector('#mwiPlcsSettings');
@@ -1126,8 +1269,8 @@
       // 市场面板打开后再读库存，确保可交易清单（marketItems）已就绪
       const items = readSellableItems();
       if (!items.length) {
-        setLog('没有可出售的库存物品（已排除不可交易 / 强化>0 / 命中排除规则 / 已屏蔽）');
-        showPanelMsg('没有符合条件的数据：已排除不可交易 / 强化>0 / 命中排除规则 / 已屏蔽的物品，请调整设置或检查库存');
+        setLog('没有可出售的库存物品（已排除不可交易 / 强化>0 / 命中排除规则 / 已忽略或库存不足保留量）');
+        showPanelMsg('没有符合条件的数据：已排除不可交易 / 强化>0 / 命中排除规则 / 已忽略或库存未超过保留数量的物品，请调整设置或检查库存');
         return;
       }
       setLog('共 ' + items.length + ' 个物品可出售，按总价值从高到低开始…');
@@ -1156,7 +1299,7 @@
       running = false;
       if (stopBtn) stopBtn.style.display = 'none';
       if (startBtn) startBtn.style.display = 'inline-block';
-      // 停止/结束后清空进度与队列，恢复已屏蔽列表与设置区块
+      // 停止/结束后清空进度与队列，恢复已忽略列表与设置区块
       clearBatchUI();
       if (ignoreList) { ignoreList.style.display = ''; renderIgnoreList(); }
       if (settingsEl) { settingsEl.style.display = ''; renderSettings(); }
@@ -1171,6 +1314,9 @@
   // ============================================================
   // 启动：等游戏主界面就绪后挂面板
   // ============================================================
+
+  // 升级迁移（幂等）：老版本独立 key 收敛 / string[] 旧格式升级到 [{hrid, keep}]，并清理遗留 key
+  migrateStore();
 
   const bootTimer = setInterval(() => {
     if (document.querySelector('#root') && rootFiber() && getGameState()) {
